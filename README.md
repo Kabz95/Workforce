@@ -46,6 +46,8 @@ firebase emulators:start
 firebase deploy --only firestore:rules,firestore:indexes,functions,hosting
 ```
 
+Full production checklist: see [`DEPLOY.md`](DEPLOY.md) — project creation, Blaze billing note for Functions, first-admin bootstrap via `functions/set-claims.cjs`, verification.
+
 ### Setting roles (custom claims)
 New users sign up as `worker` in tenant `demo-hub`. Assign other roles with the Admin SDK, e.g.:
 
