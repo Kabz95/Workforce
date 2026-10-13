@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { isFirebaseConfigured, useEmulators } from '../lib/firebase';
 import ErrorNotice from '../components/ErrorNotice';
 
 export default function Login() {
@@ -52,6 +53,11 @@ export default function Login() {
         New accounts start as <strong>worker</strong> in the demo hub. Roles and
         hub membership come from your organisation in production.
       </p>
+      {!isFirebaseConfigured && !useEmulators && (
+        <div className="notice">
+          <strong>Firebase Project Setup Pending:</strong> Set your project's web config in <code>web/.env</code> or start local emulators with <code>VITE_USE_EMULATORS=true</code> to begin authenticating.
+        </div>
+      )}
       <ErrorNotice error={error} />
       <form onSubmit={submit}>
         {mode === 'signup' && (
