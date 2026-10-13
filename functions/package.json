@@ -1,0 +1,21 @@
+{
+  "name": "workforce-platform-functions",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Cloud Functions: consent machinery, export, deletion, aggregation for the Peer Support Workforce Network platform.",
+  "main": "lib/index.js",
+  "scripts": {
+    "build": "tsc",
+    "serve": "npm run build && firebase emulators:start --only functions",
+    "deploy": "firebase deploy --only functions",
+    "logs": "firebase functions:log"
+  },
+  "engines": { "node": "20" },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "firebase-functions": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

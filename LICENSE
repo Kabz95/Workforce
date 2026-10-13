@@ -1,0 +1,20 @@
+Peer Support Workforce Network — Platform
+Copyright (C) 2026 Christopher Kabue
+
+This program is free software, licensed under the GNU Affero General
+Public License, version 3 (AGPL-3.0-only).
+
+SPDX-License-Identifier: AGPL-3.0-only
+
+The full license text is published by the Free Software Foundation at:
+https://www.gnu.org/licenses/agpl-3.0.txt
+
+To place the canonical license text in this file, run:
+  curl -o LICENSE https://www.gnu.org/licenses/agpl-3.0.txt
+
+What this means in plain language: you may use, study, change, and share
+this software. If you run a modified version of it as a network service,
+you must make the modified source code available to the service's users
+under the same license. That network-use clause is deliberate: it keeps
+this public-good infrastructure from being captured by any single
+operator, including one who never distributes a copy.

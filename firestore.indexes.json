@@ -1,0 +1,25 @@
+{
+  "indexes": [
+    { "collectionGroup": "firstContactForms", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "ownerId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "pathwaySteps", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "ownerId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "opportunities", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "opportunityApplications", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "ownerId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "consents", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "granterId", "order": "ASCENDING" }, { "fieldPath": "revokedAt", "order": "ASCENDING" }, { "fieldPath": "expiresAt", "order": "ASCENDING" }] },
+    { "collectionGroup": "consents", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "expiresAt", "order": "ASCENDING" }] },
+    { "collectionGroup": "auditLogs", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "subjectId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "aggregates", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "metric", "order": "ASCENDING" }, { "fieldPath": "period", "order": "DESCENDING" }] },
+    { "collectionGroup": "governanceDecisions", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "decidedAt", "order": "DESCENDING" }] },
+    { "collectionGroup": "adaptationLogs", "queryScope": "COLLECTION",
+      "fields": [{ "fieldPath": "tenantId", "order": "ASCENDING" }, { "fieldPath": "createdAt", "order": "DESCENDING" }] }
+  ],
+  "fieldOverrides": []
+}
