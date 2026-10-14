@@ -52,7 +52,7 @@ export default function Layout() {
             <>
               <span>{user.email}</span>
               <span className="pill">hub: {tenantId}</span>
-              <button type="button" onClick={handleSignOut}>Sign out</button>
+              <button type="button" data-testid="sign-out" onClick={handleSignOut}>Sign out</button>
             </>
           ) : (
             <Link to="/login" style={{ color: '#fff' }}>Sign in</Link>

@@ -78,7 +78,7 @@ export default function WorkerDashboard() {
   const inProgress = steps.filter((s) => s.status === 'in-progress');
 
   return (
-    <div>
+    <div data-testid="worker-dashboard">
       <ErrorNotice error={error} />
       <section className="card">
         <h2>Attention queue</h2>

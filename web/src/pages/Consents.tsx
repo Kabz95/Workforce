@@ -134,7 +134,7 @@ export default function Consents() {
         from the record and writes an audit event you can see in My audit log.
       </p>
       <ErrorNotice error={error} />
-      {notice && <div className="notice success">{notice}</div>}
+      {notice && <div className="notice success" data-testid="notice">{notice}</div>}
 
       <section className="card">
         <h2>Grant access</h2>
@@ -143,6 +143,7 @@ export default function Consents() {
             <label htmlFor="granteeId">Grantee user ID (navigator / supervisor)</label>
             <input
               id="granteeId"
+              data-testid="consent-grantee-id"
               value={granteeId}
               onChange={(e) => setGranteeId(e.target.value)}
               required
@@ -152,7 +153,7 @@ export default function Consents() {
           </div>
           <div className="field">
             <label htmlFor="resourceType">Record type</label>
-            <select id="resourceType" value={resourceType} onChange={(e) => setResourceType(e.target.value)}>
+            <select id="resourceType" data-testid="consent-resource-type" value={resourceType} onChange={(e) => setResourceType(e.target.value)}>
               <option value="firstContactForms">First-contact forms</option>
               <option value="pathwaySteps">Pathway steps</option>
               <option value="certificationNavigation">Certification navigation</option>
@@ -168,13 +169,14 @@ export default function Consents() {
           </div>
           <div className="field">
             <label htmlFor="resourceId">Record ID (the specific record being shared)</label>
-            <input id="resourceId" value={resourceId} onChange={(e) => setResourceId(e.target.value)} required />
+            <input id="resourceId" data-testid="consent-resource-id" value={resourceId} onChange={(e) => setResourceId(e.target.value)} required />
             <small>Grants are per-document: one grant per record, so access can be revoked precisely.</small>
           </div>
           <div className="field">
             <label htmlFor="expiryDays">Expires after (days)</label>
             <input
               id="expiryDays"
+              data-testid="consent-expiry-days"
               type="number"
               min={1}
               max={365}
@@ -185,18 +187,18 @@ export default function Consents() {
           </div>
           <div className="field">
             <label htmlFor="purpose">Purpose (why this person needs access)</label>
-            <select id="purpose" value={purpose} onChange={(e) => setPurpose(e.target.value)} required>
+            <select id="purpose" data-testid="consent-purpose" value={purpose} onChange={(e) => setPurpose(e.target.value)} required>
               {WORKER_PURPOSE_OPTIONS.map((p) => (
                 <option key={p} value={p}>{p}</option>
               ))}
             </select>
             <small>Purposes come from a fixed list — the server rejects anything else, so your audit log stays legible.</small>
           </div>
-          <button type="submit">Grant access</button>
+          <button type="submit" data-testid="consent-submit">Grant access</button>
         </form>
       </section>
 
-      <section className="card">
+      <section className="card" data-testid="live-grants">
         <h2>Live grants</h2>
         {live.length === 0 ? (
           <p className="muted">No live grants. Nothing of yours is shared right now.</p>
@@ -205,7 +207,7 @@ export default function Consents() {
         )}
       </section>
 
-      <section className="card">
+      <section className="card" data-testid="ended-grants">
         <h2>Ended grants (revoked / expired)</h2>
         {ended.length === 0 ? (
           <p className="muted">No ended grants yet.</p>

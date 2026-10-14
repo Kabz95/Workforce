@@ -103,7 +103,7 @@ export default function AuditLog() {
         {visible.length === 0 ? (
           <p className="muted">No audit entries match these filters.</p>
         ) : (
-          <table>
+          <table data-testid="audit-table">
             <thead><tr><th>When</th><th>What happened</th><th>Resource</th><th>Who</th><th>Acting role</th><th>Grant</th><th>Purpose</th><th>Result</th></tr></thead>
             <tbody>
               {visible.map((e) => (

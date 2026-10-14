@@ -212,13 +212,13 @@ export default function WorkerRecord() {
         through Consents. Nothing here is shared with employers.
       </p>
       <ErrorNotice error={error} />
-      {notice && <div className="notice success">{notice}</div>}
+      {notice && <div className="notice success" data-testid="notice">{notice}</div>}
 
       <section className="card">
         <h2>Worker profile</h2>
         {worker && !editing ? (
           <>
-            <p><strong>{worker.displayName}</strong> · <span className="pill">{worker.status}</span></p>
+            <p data-testid="profile-card"><strong>{worker.displayName}</strong> · <span className="pill">{worker.status}</span></p>
             <p className="muted">Created {formatTimestamp(worker.createdAt)} · Updated {formatTimestamp(worker.updatedAt)}</p>
             <div className="row">
               <button type="button" onClick={() => setEditing(true)}>Edit</button>
@@ -229,11 +229,11 @@ export default function WorkerRecord() {
           <form onSubmit={saveWorker}>
             <div className="field">
               <label htmlFor="displayName">Display name</label>
-              <input id="displayName" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
+              <input id="displayName" data-testid="profile-display-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required />
             </div>
             <div className="field">
               <label htmlFor="status">Status</label>
-              <select id="status" value={status} onChange={(e) => setStatus(e.target.value)}>
+              <select id="status" data-testid="profile-status" value={status} onChange={(e) => setStatus(e.target.value)}>
                 <option value="active">Active</option>
                 <option value="on-leave">On leave</option>
                 <option value="paused">Paused</option>
@@ -241,7 +241,7 @@ export default function WorkerRecord() {
               </select>
             </div>
             <div className="row">
-              <button type="submit">{worker ? 'Save' : 'Create profile'}</button>
+              <button type="submit" data-testid="profile-submit">{worker ? 'Save' : 'Create profile'}</button>
               {worker && (
                 <button type="button" className="secondary" onClick={() => setEditing(false)}>Cancel</button>
               )}
@@ -258,7 +258,7 @@ export default function WorkerRecord() {
         </p>
         <div className="row">
           <button type="button" onClick={exportMyData}>Export my data</button>
-          <button type="button" className="danger" onClick={deleteMyData}>Delete all my data</button>
+          <button type="button" data-testid="delete-all-data" className="danger" onClick={deleteMyData}>Delete all my data</button>
         </div>
       </section>
 
@@ -268,7 +268,7 @@ export default function WorkerRecord() {
         {forms.length === 0 ? (
           <p className="muted">No first-contact forms yet.</p>
         ) : (
-          <ul>
+          <ul data-testid="forms-list">
             {forms.map((f) => (
               <li key={f.id}>
                 <strong>{f.contactName}</strong> via {f.contactMethod} · {formatTimestamp(f.createdAt)}
@@ -284,22 +284,22 @@ export default function WorkerRecord() {
         <form onSubmit={saveForm}>
           <div className="field">
             <label htmlFor="contactName">Contact name</label>
-            <input id="contactName" value={contactName} onChange={(e) => setContactName(e.target.value)} required />
+            <input id="contactName" data-testid="form-contact-name" value={contactName} onChange={(e) => setContactName(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="contactMethod">Preferred contact method</label>
-            <input id="contactMethod" value={contactMethod} onChange={(e) => setContactMethod(e.target.value)} required />
+            <input id="contactMethod" data-testid="form-contact-method" value={contactMethod} onChange={(e) => setContactMethod(e.target.value)} required />
           </div>
           <div className="field">
             <label htmlFor="needs">Needs / what would help</label>
-            <textarea id="needs" value={needs} onChange={(e) => setNeeds(e.target.value)} />
+            <textarea id="needs" data-testid="form-needs" value={needs} onChange={(e) => setNeeds(e.target.value)} />
           </div>
           <div className="field">
             <label htmlFor="notes">Notes (private to you)</label>
-            <textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            <textarea id="notes" data-testid="form-notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
           </div>
           <div className="row">
-            <button type="submit">{editingFormId ? 'Save changes' : 'Save form'}</button>
+            <button type="submit" data-testid="form-submit">{editingFormId ? 'Save changes' : 'Save form'}</button>
             {editingFormId && (
               <button type="button" className="secondary" onClick={resetForm}>Cancel</button>
             )}

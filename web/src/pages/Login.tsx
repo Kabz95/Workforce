@@ -75,6 +75,7 @@ export default function Login() {
           <label htmlFor="email">Email</label>
           <input
             id="email"
+            data-testid="login-email"
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
@@ -85,6 +86,7 @@ export default function Login() {
           <label htmlFor="password">Password</label>
           <input
             id="password"
+            data-testid="login-password"
             type="password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
@@ -92,7 +94,7 @@ export default function Login() {
           />
         </div>
         <div className="row">
-          <button type="submit" disabled={busy}>
+          <button type="submit" data-testid="login-submit" disabled={busy}>
             {mode === 'signin' ? 'Sign in' : 'Create account'}
           </button>
           <button

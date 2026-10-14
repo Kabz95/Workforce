@@ -1,31 +1,100 @@
 name: CI
 
+# Automatic test gate for the workforce platform.
+#
+# Runs on every push and PR: builds + the full deterministic test
+# suites (kernel, rules, callable) + the Playwright end-to-end
+# walkthrough — all against the FIREBASE EMULATORS (demo-workforce).
+#
+# Deliberately absent: any deploy step, any push step, any live
+# project access, any secret. The emulators are the only Firebase
+# this workflow touches. Deploy still requires Kabue's explicit
+# authorization from his own Cloud Shell.
+#
+# The emulator suites run inside `firebase emulators:exec` with one
+# bounded retry: the first emulator start has a known
+# trigger-registration race that can shut the stack down, and a
+# restart fixes it. A genuine test failure fails both attempts.
+
 on:
   push:
-    branches: [main]
   pull_request:
 
 jobs:
-  functions:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - run: npm ci
-        working-directory: functions
-      - run: npm run build
-        working-directory: functions
+      - name: Checkout
+        uses: actions/checkout@v4
 
-  web:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm ci
-        working-directory: web
-      - run: npm run build
-        working-directory: web
+          node-version: '20'
+          cache: npm
+
+      - name: Set up Java 21 (emulators)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install Firebase CLI (pinned — matches the verified local version)
+        run: npm install -g firebase-tools@15.33.0
+
+      - name: 'Install dependencies (workspaces: web + functions)'
+        run: npm ci
+
+      - name: Build functions (tsc)
+        run: npm --prefix functions run build
+
+      - name: Build web (production check)
+        run: npm --prefix web run build
+
+      - name: Kernel tests (no emulator needed)
+        run: npm --prefix functions run test:kernel
+
+      - name: Emulator suites — rules + callable (retry once for the first-start trigger race)
+        run: |
+          for attempt in 1 2; do
+            if firebase emulators:exec --project demo-workforce --only auth,firestore,functions \
+              "npm --prefix functions run test:rules && npm --prefix functions run test:callable"; then
+              echo "Emulator suites passed on attempt $attempt."
+              break
+            fi
+            echo "Emulator suites failed on attempt $attempt."
+            if [ "$attempt" = "2" ]; then
+              echo "Emulator suites failed twice — failing the run."
+              exit 1
+            fi
+            echo "Retrying once against a fresh emulator (known first-start trigger race)..."
+          done
+
+      - name: Install Playwright Chromium
+        run: npx --prefix web playwright install --with-deps chromium
+
+      - name: Playwright end-to-end walkthrough (retry once against a fresh emulator)
+        run: |
+          for attempt in 1 2; do
+            if firebase emulators:exec --project demo-workforce --only auth,firestore,functions \
+              "npm --prefix web run test:e2e"; then
+              echo "Playwright walkthrough passed on attempt $attempt."
+              break
+            fi
+            echo "Playwright walkthrough failed on attempt $attempt."
+            if [ "$attempt" = "2" ]; then
+              echo "Playwright walkthrough failed twice — failing the run."
+              exit 1
+            fi
+            echo "Retrying once against a fresh emulator..."
+          done
+
+      - name: Upload Playwright report + traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7

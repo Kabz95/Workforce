@@ -167,7 +167,7 @@ export default function Handoffs() {
         access through <Link to="/consents">Consents</Link>.
       </p>
       <ErrorNotice error={error} />
-      {notice && <div className="notice success">{notice}</div>}
+      {notice && <div className="notice success" data-testid="notice">{notice}</div>}
 
       {canSend && (
         <section className="card">
@@ -181,15 +181,15 @@ export default function Handoffs() {
           <form onSubmit={offer}>
             <div className="field">
               <label htmlFor="workerId">Worker account ID (the handoff is about this worker)</label>
-              <input id="workerId" value={workerId} onChange={(e) => setWorkerId(e.target.value)} required />
+              <input id="workerId" data-testid="handoff-worker-id" value={workerId} onChange={(e) => setWorkerId(e.target.value)} required />
             </div>
             <div className="field">
               <label htmlFor="recipientId">Recipient account ID</label>
-              <input id="recipientId" value={recipientId} onChange={(e) => setRecipientId(e.target.value)} required />
+              <input id="recipientId" data-testid="handoff-recipient-id" value={recipientId} onChange={(e) => setRecipientId(e.target.value)} required />
             </div>
             <div className="field">
               <label htmlFor="recipientRole">Recipient role</label>
-              <select id="recipientRole" value={recipientRole} onChange={(e) => setRecipientRole(e.target.value as AnyRole)}>
+              <select id="recipientRole" data-testid="handoff-recipient-role" value={recipientRole} onChange={(e) => setRecipientRole(e.target.value as AnyRole)}>
                 {RECIPIENT_ROLE_OPTIONS.map((r) => (
                   <option key={r} value={r}>{ROLE_LABELS[r]}</option>
                 ))}
@@ -197,7 +197,7 @@ export default function Handoffs() {
             </div>
             <div className="field">
               <label htmlFor="handoffPurpose">Purpose</label>
-              <select id="handoffPurpose" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
+              <select id="handoffPurpose" data-testid="handoff-purpose" value={purpose} onChange={(e) => setPurpose(e.target.value)}>
                 {WORKER_PURPOSE_OPTIONS.map((p) => (
                   <option key={p} value={p}>{p}</option>
                 ))}
@@ -205,14 +205,14 @@ export default function Handoffs() {
             </div>
             <div className="field">
               <label htmlFor="payloadSummary">Summary (routing metadata only — never the worker&apos;s story)</label>
-              <textarea id="payloadSummary" value={payloadSummary} onChange={(e) => setPayloadSummary(e.target.value)} />
+              <textarea id="payloadSummary" data-testid="handoff-summary" value={payloadSummary} onChange={(e) => setPayloadSummary(e.target.value)} />
             </div>
-            <button type="submit">Offer handoff</button>
+            <button type="submit" data-testid="handoff-offer-submit">Offer handoff</button>
           </form>
         </section>
       )}
 
-      <section className="card">
+      <section className="card" data-testid="handoffs-to-me">
         <h2>Handoffs to me</h2>
         {handoffs.filter(toMe).length === 0 ? (
           <p className="muted">No handoffs addressed to you.</p>
@@ -221,7 +221,7 @@ export default function Handoffs() {
         )}
       </section>
 
-      <section className="card">
+      <section className="card" data-testid="handoffs-about-me">
         <h2>Handoffs about me (I am the subject)</h2>
         {handoffs.filter(mine).length === 0 ? (
           <p className="muted">No handoffs about your record.</p>
@@ -237,7 +237,7 @@ export default function Handoffs() {
         )}
       </section>
 
-      <section className="card">
+      <section className="card" data-testid="handoffs-sent">
         <h2>Handoffs I sent</h2>
         {handoffs.filter(fromMe).length === 0 ? (
           <p className="muted">You have not sent any handoffs.</p>
