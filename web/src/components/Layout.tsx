@@ -1,26 +1,35 @@
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import type { Role } from '../lib/types';
+import { useRole } from '../context/RoleContext';
+import RoleSwitcher from './RoleSwitcher';
+import type { Role, CanonicalRoleId } from '../lib/types';
+import { mapLegacyRole } from '../lib/roleCatalog';
+import SupportAssistant from './SupportAssistant';
 
-const NAV: { to: string; label: string; roles?: Role[] }[] = [
+const NAV: { to: string; label: string; roles?: (Role | CanonicalRoleId)[] }[] = [
   { to: '/', label: 'Dashboard' },
   { to: '/record', label: 'My Record', roles: ['worker', 'navigator', 'supervisor'] },
   { to: '/pathway', label: 'Pathway', roles: ['worker', 'navigator'] },
-  { to: '/consents', label: 'Consents', roles: ['worker'] },
-  { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubAdmin'] },
+  { to: '/agreements', label: 'Agreements' },
+  { to: '/consents', label: 'Consents', roles: ['worker', 'privacyLead'] },
+  { to: '/knowledge', label: 'Knowledge Base' },
+  { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubCoordinator', 'hubAdmin'] },
   { to: '/opportunities', label: 'Opportunities' },
   { to: '/governance', label: 'Governance' },
-  { to: '/aggregates', label: 'Aggregates', roles: ['backboneAnalyst', 'governance'] },
+  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'backboneAnalyst', 'steeringCircle', 'council', 'governance'] },
   { to: '/audit', label: 'My Audit Log' },
 ];
 
 export default function Layout() {
-  const { user, roles, tenantId, signOut } = useAuth();
+  const { user, tenantId, signOut } = useAuth();
+  const { activeRole, heldGrants } = useRole();
   const navigate = useNavigate();
 
   const visible = NAV.filter((item) => {
     if (!item.roles) return true;
-    return item.roles.some((r) => roles.includes(r));
+    const allowed = item.roles.map((r) => mapLegacyRole(r as string));
+    // Item is visible if current acting role or any held grant has permission
+    return allowed.includes(activeRole) || heldGrants.some((g) => allowed.includes(g.role));
   });
 
   const handleSignOut = async () => {
@@ -44,10 +53,8 @@ export default function Layout() {
         <div className="userbox">
           {user ? (
             <>
+              <RoleSwitcher />
               <span>{user.email}</span>
-              {roles.map((r) => (
-                <span key={r} className="role-badge">{r}</span>
-              ))}
               <span className="pill">hub: {tenantId}</span>
               <button type="button" onClick={handleSignOut}>Sign out</button>
             </>
@@ -62,6 +69,7 @@ export default function Layout() {
       <footer className="footer">
         Worker-controlled records. No surveillance. Aggregates only, upward.
       </footer>
+      <SupportAssistant />
     </div>
   );
 }

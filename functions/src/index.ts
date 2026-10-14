@@ -18,9 +18,12 @@ import { getStorage } from "firebase-admin/storage";
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
 import { onDocumentUpdated } from "firebase-functions/v2/firestore";
+import { setGlobalOptions } from "firebase-functions/v2";
+
+setGlobalOptions({ region: "northamerica-northeast1" });
 
 initializeApp();
-const db = getFirestore();
+const db = getFirestore("peerworkforce");
 const storage = getStorage();
 
 // Collections whose documents are owned by a worker (ownerId) and
@@ -371,7 +374,10 @@ export const expireConsents = onSchedule(
  * access from the shared document immediately, and audit it.
  */
 export const onConsentRevoke = onDocumentUpdated(
-  "consents/{consentId}",
+  {
+    document: "consents/{consentId}",
+    database: "peerworkforce",
+  },
   async (event) => {
     const before = event.data?.before.data() as ConsentGrant | undefined;
     const after = event.data?.after.data() as ConsentGrant | undefined;

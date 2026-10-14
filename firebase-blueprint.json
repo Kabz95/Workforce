@@ -1,0 +1,328 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile document",
+      "type": "object",
+      "properties": {
+        "displayName": { "type": "string" },
+        "email": { "type": "string", "format": "email" },
+        "tenantId": { "type": "string" },
+        "roles": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["email", "tenantId", "roles"]
+    },
+    "Tenant": {
+      "title": "Tenant",
+      "description": "Regional hub tenant document",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "region": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["name", "region"]
+    },
+    "Worker": {
+      "title": "Worker",
+      "description": "Worker profile record",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "displayName": { "type": "string" },
+        "status": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["ownerId", "tenantId"]
+    },
+    "FirstContactForm": {
+      "title": "FirstContactForm",
+      "description": "First contact form intake record",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "sharedWith": { "type": "array" },
+        "contactName": { "type": "string" },
+        "contactMethod": { "type": "string" },
+        "needs": { "type": "string" },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["ownerId", "tenantId", "contactName"]
+    },
+    "PathwayStep": {
+      "title": "PathwayStep",
+      "description": "Worker career and credential pathway step",
+      "type": "object",
+      "properties": {
+        "ownerId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "type": { "type": "string" },
+        "title": { "type": "string" },
+        "status": { "type": "string" },
+        "sharedWith": { "type": "array" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["ownerId", "tenantId", "title", "status"]
+    },
+    "Consent": {
+      "title": "Consent",
+      "description": "Consent grant machinery record",
+      "type": "object",
+      "properties": {
+        "granterId": { "type": "string" },
+        "granteeId": { "type": "string" },
+        "tenantId": { "type": "string" },
+        "scope": { "type": "string" },
+        "resourceType": { "type": "string" },
+        "resourceId": { "type": "string" },
+        "grantedAt": { "type": "string" },
+        "expiresAt": { "type": "string" },
+        "revokedAt": { "type": "string" },
+        "purpose": { "type": "string" }
+      },
+      "required": ["granterId", "granteeId", "tenantId", "scope", "resourceType", "resourceId"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Append-only security and consent audit log",
+      "type": "object",
+      "properties": {
+        "subjectId": { "type": "string" },
+        "actorId": { "type": "string" },
+        "action": { "type": "string" },
+        "resourceType": { "type": "string" },
+        "resourceId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["subjectId", "actorId", "action", "resourceType", "resourceId"]
+    },
+    "HelpArticle": {
+      "title": "HelpArticle",
+      "description": "Public approved knowledge base and support corpus document",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "summary": { "type": "string" },
+        "content": { "type": "string" },
+        "category": { "type": "string" },
+        "audience": { "type": "string" },
+        "jurisdiction": { "type": "string" },
+        "version": { "type": "string" },
+        "status": { "type": "string" },
+        "authorCircle": { "type": "string" },
+        "tags": { "type": "array" },
+        "publishedAt": { "type": "string" }
+      },
+      "required": ["title", "summary", "content", "category", "status", "version"]
+    },
+    "Agreement": {
+      "title": "Agreement",
+      "description": "Circular peer practice, mentorship, or supervision agreement",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "type": { "type": "string" },
+        "participantIds": { "type": "array" },
+        "tenantId": { "type": "string" },
+        "status": { "type": "string" },
+        "terms": { "type": "string" },
+        "reviewDate": { "type": "string" },
+        "effectiveFrom": { "type": "string" },
+        "effectiveUntil": { "type": "string" }
+      },
+      "required": ["title", "type", "participantIds", "status"]
+    },
+    "WorkQueueItem": {
+      "title": "WorkQueueItem",
+      "description": "Deterministic work routing queue ticket with non-narrative metadata",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "type": { "type": "string" },
+        "lane": { "type": "string" },
+        "priority": { "type": "string" },
+        "status": { "type": "string" },
+        "assigneePersonId": { "type": "string" },
+        "sourceRoute": { "type": "string" },
+        "correlationId": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["title", "lane", "status", "priority"]
+    },
+    "NotificationItem": {
+      "title": "NotificationItem",
+      "description": "Deep-link notification alert carrying zero personal worker records",
+      "type": "object",
+      "properties": {
+        "recipientPersonId": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "linkPath": { "type": "string" },
+        "read": { "type": "boolean" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["recipientPersonId", "title", "linkPath"]
+    },
+    "DecisionRecord": {
+      "title": "DecisionRecord",
+      "description": "Circle and governance decision record with transparent rationale and appeal path",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "circle": { "type": "string" },
+        "context": { "type": "string" },
+        "decisionText": { "type": "string" },
+        "authority": { "type": "string" },
+        "appealStatus": { "type": "string" },
+        "decidedAt": { "type": "string" }
+      },
+      "required": ["title", "circle", "decisionText", "authority"]
+    },
+    "Adaptation": {
+      "title": "Adaptation",
+      "description": "Localized hub practice adaptation proposal or record",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "hubId": { "type": "string" },
+        "authorId": { "type": "string" },
+        "coreOrForm": { "type": "string" },
+        "rationale": { "type": "string" },
+        "status": { "type": "string" },
+        "submittedAt": { "type": "string" }
+      },
+      "required": ["title", "hubId", "coreOrForm", "rationale"]
+    },
+    "ExceptionRecord": {
+      "title": "ExceptionRecord",
+      "description": "Time-bounded, audited emergency or governance boundary exception",
+      "type": "object",
+      "properties": {
+        "requesterId": { "type": "string" },
+        "circle": { "type": "string" },
+        "scope": { "type": "string" },
+        "rationale": { "type": "string" },
+        "grantedUntil": { "type": "string" },
+        "approvedBy": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["requesterId", "scope", "rationale", "grantedUntil"]
+    },
+    "ServiceCommitment": {
+      "title": "ServiceCommitment",
+      "description": "Circle or hub capacity pledge and service commitment",
+      "type": "object",
+      "properties": {
+        "hubId": { "type": "string" },
+        "circle": { "type": "string" },
+        "metric": { "type": "string" },
+        "targetCommitment": { "type": "string" },
+        "reviewFrequency": { "type": "string" },
+        "status": { "type": "string" }
+      },
+      "required": ["hubId", "metric", "targetCommitment"]
+    },
+    "PublicationView": {
+      "title": "PublicationView",
+      "description": "Aggregated publication readership metrics with k>=5 suppression",
+      "type": "object",
+      "properties": {
+        "articleId": { "type": "string" },
+        "audience": { "type": "string" },
+        "period": { "type": "string" },
+        "viewCountBucket": { "type": "number" },
+        "jurisdiction": { "type": "string" }
+      },
+      "required": ["articleId", "period", "viewCountBucket"]
+    },
+    "DeveloperBrief": {
+      "title": "DeveloperBrief",
+      "description": "Weekly synthesized engineering recommendation brief from aggregated friction and test failures",
+      "type": "object",
+      "properties": {
+        "weekPeriod": { "type": "string" },
+        "synthesizedNeeds": { "type": "array" },
+        "testFailurePatterns": { "type": "array" },
+        "frictionPoints": { "type": "array" },
+        "status": { "type": "string" },
+        "triagedAt": { "type": "string" }
+      },
+      "required": ["weekPeriod", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/User" },
+      "description": "User profiles"
+    },
+    "/tenants/{tenantId}": {
+      "schema": { "$ref": "#/entities/Tenant" },
+      "description": "Hub tenants"
+    },
+    "/workers/{workerId}": {
+      "schema": { "$ref": "#/entities/Worker" },
+      "description": "Worker profiles (owner-only access)"
+    },
+    "/firstContactForms/{formId}": {
+      "schema": { "$ref": "#/entities/FirstContactForm" },
+      "description": "First contact forms"
+    },
+    "/pathwaySteps/{stepId}": {
+      "schema": { "$ref": "#/entities/PathwayStep" },
+      "description": "Pathway steps"
+    },
+    "/consents/{consentId}": {
+      "schema": { "$ref": "#/entities/Consent" },
+      "description": "Consent grants"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "#/entities/AuditLog" },
+      "description": "Audit trail entries"
+    },
+    "/helpCorpus/{articleId}": {
+      "schema": { "$ref": "#/entities/HelpArticle" },
+      "description": "Public approved knowledge base and support corpus documents"
+    },
+    "/agreements/{agreementId}": {
+      "schema": { "$ref": "#/entities/Agreement" },
+      "description": "Circular practice, supervision, and mentorship agreements"
+    },
+    "/workQueues/{queueId}": {
+      "schema": { "$ref": "#/entities/WorkQueueItem" },
+      "description": "Deterministic work routing queue tickets"
+    },
+    "/notifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/NotificationItem" },
+      "description": "Minimal deep-link alerts"
+    },
+    "/decisionRecords/{recordId}": {
+      "schema": { "$ref": "#/entities/DecisionRecord" },
+      "description": "Circle and governance formal decisions"
+    },
+    "/adaptations/{adaptationId}": {
+      "schema": { "$ref": "#/entities/Adaptation" },
+      "description": "Hub adaptation proposals"
+    },
+    "/exceptions/{exceptionId}": {
+      "schema": { "$ref": "#/entities/ExceptionRecord" },
+      "description": "Governed boundary exceptions"
+    },
+    "/serviceCommitments/{commitmentId}": {
+      "schema": { "$ref": "#/entities/ServiceCommitment" },
+      "description": "Circle capacity and SLA commitments"
+    },
+    "/publicationViews/{viewId}": {
+      "schema": { "$ref": "#/entities/PublicationView" },
+      "description": "Suppressed aggregate publication view statistics"
+    },
+    "/developerBriefs/{briefId}": {
+      "schema": { "$ref": "#/entities/DeveloperBrief" },
+      "description": "Weekly engineering recommendation briefs"
+    }
+  }
+}

@@ -28,7 +28,15 @@ import type {
   Aggregate,
   WithId,
   Worker,
+  HelpArticle,
+  CircularAgreement,
+  WorkQueueItem,
+  NotificationItem,
+  DecisionRecord,
+  Adaptation,
+  DeveloperBrief,
 } from './types';
+import { KNOWLEDGE_CORPUS } from './knowledgeCorpus';
 
 /**
  * Typed Firestore helpers.
@@ -420,3 +428,185 @@ export async function listMyAuditLogs(uid: string): Promise<WithId<AuditLog>[]> 
   const snap = await getDocs(q);
   return snap.docs.map((d) => toDoc<AuditLog>(d));
 }
+
+// ==========================================
+// PHASE 3: EXPANSION & CIRCULAR INFRASTRUCTURE QUERIES
+// ==========================================
+
+// --- Help Corpus ---
+
+export async function listHelpArticles(category?: string, audience?: string): Promise<WithId<HelpArticle>[]> {
+  try {
+    const snap = await getDocs(collection(db, 'helpCorpus'));
+    if (!snap.empty) {
+      let articles = snap.docs.map((d) => toDoc<HelpArticle>(d));
+      if (category && category !== 'all') {
+        articles = articles.filter((a) => a.category === category);
+      }
+      if (audience && audience !== 'all') {
+        articles = articles.filter((a) => a.audience === audience || a.audience === 'all');
+      }
+      return articles;
+    }
+  } catch (err) {
+    console.warn('Falling back to built-in knowledge corpus:', err);
+  }
+
+  // Graceful fallback to verified built-in knowledge corpus
+  let corpus = KNOWLEDGE_CORPUS.map((item) => ({ ...item }));
+  if (category && category !== 'all') {
+    corpus = corpus.filter((a) => a.category === category);
+  }
+  if (audience && audience !== 'all') {
+    corpus = corpus.filter((a) => a.audience === audience || a.audience === 'all');
+  }
+  return corpus as WithId<HelpArticle>[];
+}
+
+export async function createHelpArticle(article: Omit<HelpArticle, 'publishedAt'>): Promise<string> {
+  const ref = await addDoc(collection(db, 'helpCorpus'), {
+    ...article,
+    publishedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+// --- Circular Agreements ---
+
+export async function listMyAgreements(personId: string, tenantId: string): Promise<WithId<CircularAgreement>[]> {
+  try {
+    const q = query(
+      collection(db, 'agreements'),
+      where('tenantId', '==', tenantId),
+      where('participantIds', 'array-contains', personId),
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => toDoc<CircularAgreement>(d));
+  } catch (err) {
+    console.warn('Error fetching agreements from Firestore:', err);
+    return [];
+  }
+}
+
+export async function createAgreement(
+  agreement: Omit<CircularAgreement, 'createdAt'>,
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'agreements'), {
+    ...agreement,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function updateAgreement(id: string, patch: Partial<CircularAgreement>): Promise<void> {
+  await updateDoc(doc(db, 'agreements', id), patch);
+}
+
+// --- Work Queues ---
+
+export async function listWorkQueue(assigneePersonId?: string): Promise<WithId<WorkQueueItem>[]> {
+  try {
+    const snap = await getDocs(collection(db, 'workQueues'));
+    let items = snap.docs.map((d) => toDoc<WorkQueueItem>(d));
+    if (assigneePersonId) {
+      items = items.filter((x) => !x.assigneePersonId || x.assigneePersonId === assigneePersonId);
+    }
+    return items;
+  } catch (err) {
+    console.warn('Error listing work queue:', err);
+    return [];
+  }
+}
+
+export async function createWorkQueueItem(
+  item: Omit<WorkQueueItem, 'createdAt' | 'correlationId'>,
+): Promise<string> {
+  const correlationId = `wq-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 6)}`;
+  const ref = await addDoc(collection(db, 'workQueues'), {
+    ...item,
+    correlationId,
+    createdAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+// --- Notifications ---
+
+export async function listMyNotifications(recipientPersonId: string): Promise<WithId<NotificationItem>[]> {
+  try {
+    const q = query(
+      collection(db, 'notifications'),
+      where('recipientPersonId', '==', recipientPersonId),
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => toDoc<NotificationItem>(d));
+  } catch (err) {
+    console.warn('Error listing notifications:', err);
+    return [];
+  }
+}
+
+export async function markNotificationRead(id: string): Promise<void> {
+  await updateDoc(doc(db, 'notifications', id), { read: true });
+}
+
+// --- Decision Records ---
+
+export async function listDecisionRecords(): Promise<WithId<DecisionRecord>[]> {
+  try {
+    const snap = await getDocs(collection(db, 'decisionRecords'));
+    return snap.docs.map((d) => toDoc<DecisionRecord>(d));
+  } catch (err) {
+    console.warn('Error fetching decision records:', err);
+    return [];
+  }
+}
+
+export async function createDecisionRecord(
+  rec: Omit<DecisionRecord, 'decidedAt'>,
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'decisionRecords'), {
+    ...rec,
+    decidedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+// --- Adaptations ---
+
+export async function listAdaptations(hubId?: string): Promise<WithId<Adaptation>[]> {
+  try {
+    const snap = await getDocs(collection(db, 'adaptations'));
+    let items = snap.docs.map((d) => toDoc<Adaptation>(d));
+    if (hubId) {
+      items = items.filter((a) => a.hubId === hubId);
+    }
+    return items;
+  } catch (err) {
+    console.warn('Error fetching adaptations:', err);
+    return [];
+  }
+}
+
+export async function createAdaptation(
+  adaptation: Omit<Adaptation, 'submittedAt'>,
+): Promise<string> {
+  const ref = await addDoc(collection(db, 'adaptations'), {
+    ...adaptation,
+    submittedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+// --- Developer Briefs ---
+
+export async function listDeveloperBriefs(): Promise<WithId<DeveloperBrief>[]> {
+  try {
+    const snap = await getDocs(collection(db, 'developerBriefs'));
+    return snap.docs.map((d) => toDoc<DeveloperBrief>(d));
+  } catch (err) {
+    console.warn('Error fetching developer briefs:', err);
+    return [];
+  }
+}
+

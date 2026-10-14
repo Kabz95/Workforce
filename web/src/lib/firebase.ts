@@ -11,23 +11,47 @@ import {
   type Functions,
 } from 'firebase/functions';
 
-// Firebase config from environment. All values are public web identifiers
-// (not secrets) — but a real .env is never committed.
-const isFirebaseConfigured = Boolean(import.meta.env.VITE_FIREBASE_API_KEY);
+import appletConfig from '../firebase-applet-config.json';
 
+function resolveConfigVal(envVal: string | undefined, appletVal: string | undefined): string {
+  if (
+    envVal &&
+    envVal.trim() !== '' &&
+    !envVal.startsWith('your-') &&
+    !envVal.startsWith('demo-') &&
+    envVal !== '000000000000' &&
+    !envVal.includes('000000000000')
+  ) {
+    return envVal;
+  }
+  return appletVal || '';
+}
+
+// Firebase config prioritizing live appletConfig over container-injected placeholder env vars.
 const firebaseConfig = {
-  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string) || 'demo-workforce-api-key',
-  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string) || 'demo-workforce.firebaseapp.com',
-  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string) || 'demo-workforce',
-  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string) || 'demo-workforce.appspot.com',
-  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string) || '000000000000',
-  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string) || '1:000000000000:web:000000000000',
+  apiKey: resolveConfigVal(import.meta.env.VITE_FIREBASE_API_KEY, appletConfig.apiKey),
+  authDomain: resolveConfigVal(import.meta.env.VITE_FIREBASE_AUTH_DOMAIN, appletConfig.authDomain),
+  projectId: resolveConfigVal(import.meta.env.VITE_FIREBASE_PROJECT_ID, appletConfig.projectId),
+  storageBucket: resolveConfigVal(import.meta.env.VITE_FIREBASE_STORAGE_BUCKET, appletConfig.storageBucket),
+  messagingSenderId: resolveConfigVal(import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID, appletConfig.messagingSenderId),
+  appId: resolveConfigVal(import.meta.env.VITE_FIREBASE_APP_ID, appletConfig.appId),
 };
+
+const databaseId = resolveConfigVal(import.meta.env.VITE_FIREBASE_DATABASE_ID, appletConfig.firestoreDatabaseId);
+
+const isFirebaseConfigured = Boolean(
+  firebaseConfig.apiKey &&
+  !firebaseConfig.apiKey.startsWith('your-') &&
+  !firebaseConfig.apiKey.startsWith('demo-')
+);
 
 const app: FirebaseApp = initializeApp(firebaseConfig);
 const auth: Auth = getAuth(app);
-const db: Firestore = getFirestore(app);
-const functions: Functions = getFunctions(app);
+const db: Firestore =
+  databaseId && databaseId !== '(default)'
+    ? getFirestore(app, databaseId)
+    : getFirestore(app);
+const functions: Functions = getFunctions(app, 'northamerica-northeast1');
 
 // No Firebase Analytics anywhere in this app (spec §3.4, anti-surveillance).
 
@@ -38,5 +62,5 @@ if (useEmulators) {
   connectFunctionsEmulator(functions, '127.0.0.1', 5001);
 }
 
-export { app, auth, db, functions, useEmulators, isFirebaseConfigured };
+export { app, auth, db, functions, useEmulators, isFirebaseConfigured, databaseId };
 

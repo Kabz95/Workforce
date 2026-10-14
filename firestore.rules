@@ -14,10 +14,18 @@ service cloud.firestore {
       return signedIn() && request.auth.uid in doc.get('sharedWith', []);
     }
     function hasRole(role) {
-      return signedIn() && request.auth.token.role == role;
+      return signedIn() && (
+        request.auth.token.role == role
+        || (request.auth.token.roles != null && role in request.auth.token.roles)
+      );
     }
-    function isGovernance() { return hasRole('governance'); }
-    function isHubAdmin() { return hasRole('hubAdmin'); }
+    function isHubCoordinator() { return hasRole('hubCoordinator') || hasRole('hubAdmin'); }
+    function isHubAdmin() { return isHubCoordinator(); }
+    function isPrivacyLead() { return hasRole('privacyLead'); }
+    function isSteeringCircle() { return hasRole('steeringCircle') || hasRole('governance'); }
+    function isCouncil() { return hasRole('council') || hasRole('governance'); }
+    function isGovernance() { return isSteeringCircle() || isCouncil(); }
+    function isAnalyst() { return hasRole('analyst') || hasRole('backboneAnalyst'); }
 
     // ---- Tenants (hubs) ----
     match /tenants/{tenantId} {
@@ -233,5 +241,196 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
       allow update, delete: if false;
     }
+
+    // ==========================================
+    // PHASE 1: ROLE KERNEL COLLECTIONS
+    // ==========================================
+
+    // ---- Persons: one human identity ----
+    match /persons/{personId} {
+      allow get: if signedIn() && (
+        request.auth.uid == personId ||
+        (isHubCoordinator() && sameTenant(resource.data))
+      );
+      allow list: if false;
+      allow create: if signedIn() && request.auth.uid == personId;
+      allow update: if signedIn() && request.auth.uid == personId
+        && request.resource.data.tenantId == resource.data.tenantId;
+      allow delete: if false;
+    }
+
+    // ---- Role Catalog: versioned charters for canonical roles ----
+    match /roleCatalog/{roleId} {
+      allow get, list: if signedIn();
+      allow create, update, delete: if false;
+    }
+
+    // ---- Role Grants: role + scope + term + authorizer + status ----
+    // Managed via server / admin SDK only; clients read their own verified grants.
+    match /roleGrants/{grantId} {
+      allow get, list: if signedIn() && (
+        request.auth.uid == resource.data.authUid ||
+        isHubCoordinator() ||
+        isPrivacyLead()
+      );
+      allow create, update, delete: if false;
+    }
+
+    // ---- Memberships: circle relationships ----
+    match /memberships/{membershipId} {
+      allow get, list: if signedIn() && (
+        request.auth.uid == resource.data.personId ||
+        isHubCoordinator()
+      );
+      allow create, update, delete: if isHubCoordinator();
+    }
+
+    // ---- Assignments: worker ↔ role-holder pairing ----
+    match /assignments/{assignmentId} {
+      allow get: if signedIn() && (
+        request.auth.uid == resource.data.workerPersonId ||
+        request.auth.uid == resource.data.roleHolderPersonId ||
+        isHubCoordinator()
+      );
+      allow list: if false;
+      allow create, update, delete: if isHubCoordinator();
+    }
+
+    // ---- Conflict Declarations: recusal + mitigation notes ----
+    match /conflictDeclarations/{declarationId} {
+      allow get: if signedIn() && (
+        request.auth.uid == resource.data.personId ||
+        isGovernance()
+      );
+      allow list: if isGovernance();
+      allow create: if signedIn() && request.auth.uid == request.resource.data.personId;
+      allow update: if signedIn() && request.auth.uid == resource.data.personId;
+      allow delete: if false;
+    }
+
+    // ---- Access Events: server-authored, immutable audit logs ----
+    // No client creates or alters accessEvents directly.
+    match /accessEvents/{eventId} {
+      allow get: if signedIn() && (
+        request.auth.uid == resource.data.subjectId ||
+        isPrivacyLead()
+      );
+      allow list: if isPrivacyLead();
+      allow create, update, delete: if false;
+    }
+
+    // ---- Handoffs: minimal routing metadata (Phase 2 slice) ----
+    match /handoffs/{handoffId} {
+      allow get: if signedIn() && (
+        request.auth.uid == resource.data.workerId ||
+        request.auth.uid == resource.data.recipientPersonId ||
+        isHubCoordinator()
+      );
+      allow list: if false;
+      allow create: if signedIn() && sameTenant(request.resource.data);
+      allow update: if signedIn() && (
+        request.auth.uid == resource.data.workerId ||
+        request.auth.uid == resource.data.recipientPersonId
+      );
+      allow delete: if false;
+    }
+
+    // ==========================================
+    // PHASE 3: EXPANSION & CIRCULAR INFRASTRUCTURE
+    // ==========================================
+
+    // ---- Help Corpus: Public and verified help articles ----
+    match /helpCorpus/{articleId} {
+      allow get, list: if true;
+      allow create, update: if signedIn() && (isGovernance() || isPrivacyLead());
+      allow delete: if false;
+    }
+
+    // ---- Circular Agreements: practice, mentorship, supervision ----
+    match /agreements/{agreementId} {
+      allow get: if signedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isHubCoordinator() ||
+        isGovernance()
+      );
+      allow list: if signedIn();
+      allow create: if signedIn() && request.auth.uid in request.resource.data.participantIds;
+      allow update: if signedIn() && (
+        request.auth.uid in resource.data.participantIds ||
+        isHubCoordinator()
+      );
+      allow delete: if false;
+    }
+
+    // ---- Work Queues: deterministic routing metadata ----
+    match /workQueues/{queueId} {
+      allow get, list: if signedIn() && (
+        request.auth.uid == resource.data.assigneePersonId ||
+        isHubCoordinator() ||
+        isGovernance() ||
+        isPrivacyLead()
+      );
+      allow create: if signedIn();
+      allow update: if signedIn() && (
+        request.auth.uid == resource.data.assigneePersonId ||
+        isHubCoordinator()
+      );
+      allow delete: if false;
+    }
+
+    // ---- Notifications: minimal deep-link alerts (no personal data) ----
+    match /notifications/{notificationId} {
+      allow get, list: if signedIn() && request.auth.uid == resource.data.recipientPersonId;
+      allow create: if signedIn();
+      allow update: if signedIn() && request.auth.uid == resource.data.recipientPersonId;
+      allow delete: if signedIn() && request.auth.uid == resource.data.recipientPersonId;
+    }
+
+    // ---- Decision Records: Circle and network governance transparency ----
+    match /decisionRecords/{recordId} {
+      allow get, list: if signedIn();
+      allow create, update: if isGovernance();
+      allow delete: if false;
+    }
+
+    // ---- Adaptations: Local hub adaptation proposals ----
+    match /adaptations/{adaptationId} {
+      allow get, list: if signedIn();
+      allow create: if signedIn() && request.auth.uid == request.resource.data.authorId;
+      allow update: if signedIn() && (
+        request.auth.uid == resource.data.authorId ||
+        isGovernance()
+      );
+      allow delete: if false;
+    }
+
+    // ---- Exceptions: Time-bounded emergency boundary permissions ----
+    match /exceptions/{exceptionId} {
+      allow get, list: if isPrivacyLead() || isGovernance();
+      allow create: if isGovernance();
+      allow update, delete: if false;
+    }
+
+    // ---- Service Commitments: Circle & hub capacity commitments ----
+    match /serviceCommitments/{commitmentId} {
+      allow get, list: if signedIn();
+      allow create, update: if isHubCoordinator() || isGovernance();
+      allow delete: if false;
+    }
+
+    // ---- Publication Views: Suppressed readership statistics (k >= 5) ----
+    match /publicationViews/{viewId} {
+      allow get, list: if isGovernance() || isAnalyst();
+      allow create, update, delete: if false;
+    }
+
+    // ---- Developer Briefs: Weekly aggregated engineering proposals ----
+    match /developerBriefs/{briefId} {
+      allow get, list: if isGovernance() || isPrivacyLead() || isAnalyst();
+      allow create: if false;
+      allow update: if isGovernance();
+      allow delete: if false;
+    }
   }
 }
+

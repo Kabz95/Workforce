@@ -1,65 +1,157 @@
 /**
- * set-claims.cjs — one-time admin bootstrap.
+ * set-claims.cjs — Phase 1 Role Kernel bootstrap & claims manager.
  *
- * Sets a user's Auth custom claims (role + tenantId) so the app's
- * role-based routing and security rules recognise them.
+ * Sets a user's Auth custom claims (roles[] array + tenantId) and
+ * provisions corresponding verified RoleGrants in Firestore.
  *
  * Usage (from functions/):
  *   GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json \
- *     node set-claims.cjs <USER_UID> <ROLE> <TENANT_ID>
+ *     node set-claims.cjs <USER_UID> <ROLES_COMMA_SEPARATED> <TENANT_ID> [EXPIRY_DAYS]
  *
- * Example:
- *   node set-claims.cjs abc123XYZ governance demo-hub
+ * Examples:
+ *   node set-claims.cjs abc123XYZ worker,navigator demo-hub
+ *   node set-claims.cjs def456UVW steeringCircle demo-hub 180
+ *   node set-claims.cjs ghi789RST council national 365
  *
- * Roles: worker | navigator | supervisor | employer | hubAdmin |
- *        governance | backboneAnalyst | systemAdmin
+ * Canonical Roles (13):
+ *   worker | mentor | supervisor | navigator | facilitator | hubCoordinator |
+ *   privacyLead | steeringCircle | council | backboneLead | analyst |
+ *   researcher | employer | systemAdmin (operational only)
  *
- * The user must sign out and back in for claims to take effect.
- * The service-account key is sensitive: use it once, then delete it.
- * Never commit it.
+ * Legacy Role Migration Mapping:
+ *   hubAdmin -> hubCoordinator
+ *   governance -> steeringCircle (if hub-scoped) or council (if national)
+ *   backboneAnalyst -> analyst
  */
 
 const admin = require("firebase-admin");
 
-const ROLES = [
+const CANONICAL_ROLES = [
   "worker",
-  "navigator",
+  "mentor",
   "supervisor",
+  "navigator",
+  "facilitator",
+  "hubCoordinator",
+  "privacyLead",
+  "steeringCircle",
+  "council",
+  "backboneLead",
+  "analyst",
+  "researcher",
   "employer",
-  "hubAdmin",
-  "governance",
-  "backboneAnalyst",
   "systemAdmin",
 ];
 
+function mapRole(rawRole, tenantId) {
+  const r = rawRole.trim();
+  if (r === "hubAdmin") return "hubCoordinator";
+  if (r === "governance") return tenantId === "national" ? "council" : "steeringCircle";
+  if (r === "backboneAnalyst") return "analyst";
+  return r;
+}
+
 async function main() {
-  const [uid, role, tenantId] = process.argv.slice(2);
-  if (!uid || !role || !tenantId) {
+  const [uid, rawRoles, tenantId, expiryDaysArg] = process.argv.slice(2);
+  if (!uid || !rawRoles || !tenantId) {
     console.error(
-      "Usage: node set-claims.cjs <USER_UID> <ROLE> <TENANT_ID>",
+      "Usage: node set-claims.cjs <USER_UID> <ROLES_COMMA_SEPARATED> <TENANT_ID> [EXPIRY_DAYS]",
     );
     process.exit(1);
   }
-  if (!ROLES.includes(role)) {
-    console.error(`Unknown role "${role}". Valid: ${ROLES.join(" | ")}`);
-    process.exit(1);
+
+  const expiryDays = parseInt(expiryDaysArg || "365", 10);
+  const inputList = rawRoles.split(",").map((r) => r.trim()).filter(Boolean);
+  const canonicalRoles = inputList.map((r) => mapRole(r, tenantId));
+
+  for (const r of canonicalRoles) {
+    if (!CANONICAL_ROLES.includes(r)) {
+      console.error(`Unknown canonical role "${r}". Valid: ${CANONICAL_ROLES.join(" | ")}`);
+      process.exit(1);
+    }
   }
+
   if (!process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    console.error(
-      "Set GOOGLE_APPLICATION_CREDENTIALS to a service-account key JSON path.",
+    console.warn(
+      "Notice: GOOGLE_APPLICATION_CREDENTIALS not set. Using Application Default Credentials if available.",
     );
-    process.exit(1);
   }
-  admin.initializeApp();
-  await admin.auth().setCustomUserClaims(uid, { role, tenantId });
-  // Mirror the membership in the users doc for the app's convenience.
-  await admin
-    .firestore()
-    .collection("users")
-    .doc(uid)
-    .set({ tenantId, roles: [role] }, { merge: true });
-  console.log(`Set ${uid} → role=${role}, tenantId=${tenantId}`);
-  console.log("User must sign out and back in for claims to take effect.");
+
+  if (admin.apps.length === 0) {
+    admin.initializeApp();
+  }
+
+  // Support named database peerworkforce or default
+  const db = admin.firestore("peerworkforce");
+
+  // Dual-write custom claims: roles[] array + primary role string (for backward compatibility)
+  const primaryRole = canonicalRoles[0];
+  await admin.auth().setCustomUserClaims(uid, {
+    roles: canonicalRoles,
+    role: primaryRole,
+    tenantId,
+  });
+
+  const now = admin.firestore.Timestamp.now();
+  const validUntil = new admin.firestore.Timestamp(
+    now.seconds + expiryDays * 86400,
+    0,
+  );
+
+  // Mirror person and verified roleGrants in Firestore
+  await db.collection("persons").doc(uid).set(
+    {
+      authUid: uid,
+      tenantId,
+      updatedAt: now,
+    },
+    { merge: true },
+  );
+
+  for (const role of canonicalRoles) {
+    const circle =
+      role === "council" || role === "backboneLead"
+        ? "national"
+        : role === "employer"
+        ? "boundary"
+        : role === "systemAdmin"
+        ? "operational"
+        : "hub";
+
+    const grantRef = db.collection("roleGrants").doc(`${uid}_${role}`);
+    await grantRef.set({
+      personId: uid,
+      authUid: uid,
+      role,
+      circle,
+      jurisdictionScope: tenantId,
+      term: {
+        validFrom: now,
+        validUntil,
+      },
+      authorizedBy: "admin-bootstrap",
+      status: "active",
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  // Also maintain users doc for legacy app queries
+  await db.collection("users").doc(uid).set(
+    {
+      tenantId,
+      roles: canonicalRoles,
+      role: primaryRole,
+      updatedAt: now,
+    },
+    { merge: true },
+  );
+
+  console.log(`\n✔ Claims & Grants successfully updated for ${uid}:`);
+  console.log(`  Tenant: ${tenantId}`);
+  console.log(`  Canonical Roles: ${canonicalRoles.join(", ")}`);
+  console.log(`  Term: Valid until ${new Date(validUntil.seconds * 1000).toISOString()}`);
+  console.log(`\nNote: User must refresh auth token (sign out & back in) for new claims to activate.`);
 }
 
 main().catch((err) => {

@@ -1,5 +1,6 @@
 import { Route, Routes } from 'react-router-dom';
 import { AuthProvider } from './context/AuthContext';
+import { RoleProvider } from './context/RoleContext';
 import Layout from './components/Layout';
 import ProtectedRoute from './components/ProtectedRoute';
 import Login from './pages/Login';
@@ -12,21 +13,24 @@ import Opportunities from './pages/Opportunities';
 import Governance from './pages/Governance';
 import Aggregates from './pages/Aggregates';
 import AuditLog from './pages/AuditLog';
+import KnowledgeBase from './pages/KnowledgeBase';
+import Agreements from './pages/Agreements';
 
 export default function App() {
   return (
     <AuthProvider>
-      <Routes>
-        <Route element={<Layout />}>
-          <Route path="/login" element={<Login />} />
-          <Route
-            path="/"
-            element={
-              <ProtectedRoute>
-                <Dashboard />
-              </ProtectedRoute>
-            }
-          />
+      <RoleProvider>
+        <Routes>
+          <Route element={<Layout />}>
+            <Route path="/login" element={<Login />} />
+            <Route
+              path="/"
+              element={
+                <ProtectedRoute>
+                  <Dashboard />
+                </ProtectedRoute>
+              }
+            />
           <Route
             path="/record"
             element={
@@ -91,8 +95,25 @@ export default function App() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/agreements"
+            element={
+              <ProtectedRoute>
+                <Agreements />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/knowledge"
+            element={
+              <ProtectedRoute>
+                <KnowledgeBase />
+              </ProtectedRoute>
+            }
+          />
         </Route>
       </Routes>
+      </RoleProvider>
     </AuthProvider>
   );
 }

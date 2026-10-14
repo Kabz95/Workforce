@@ -1,0 +1,12 @@
+{
+  "projectId": "peerworkforce",
+  "appId": "1:647208456901:web:cda1b300445708caf196ac",
+  "apiKey": "AIzaSyCBYIUxDrT8q43MTGREwkJ5KSJjogepPU4",
+  "authDomain": "peerworkforce.firebaseapp.com",
+  "firestoreDatabaseId": "peerworkforce",
+  "storageBucket": "peerworkforce.firebasestorage.app",
+  "messagingSenderId": "647208456901",
+  "measurementId": "",
+  "oAuthClientId": "",
+  "recaptchaSiteKey": ""
+}
