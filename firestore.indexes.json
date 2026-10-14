@@ -218,16 +218,6 @@
       "queryScope": "COLLECTION"
     },
     {
-      "collectionGroup": "governanceDecisions",
-      "fields": [
-        {
-          "fieldPath": "decidedAt",
-          "order": "DESCENDING"
-        }
-      ],
-      "queryScope": "COLLECTION"
-    },
-    {
       "collectionGroup": "adaptationLogs",
       "fields": [
         {
