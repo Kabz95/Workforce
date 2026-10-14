@@ -1,11 +1,11 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { isFirebaseConfigured, useEmulators } from '../lib/firebase';
 import ErrorNotice from '../components/ErrorNotice';
 
 export default function Login() {
-  const { signIn, signUp, signInGoogle } = useAuth();
+  const { user, loading, signIn, signUp, signInGoogle } = useAuth();
   const navigate = useNavigate();
   const [mode, setMode] = useState<'signin' | 'signup'>('signin');
   const [email, setEmail] = useState('');
@@ -13,6 +13,19 @@ export default function Login() {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState<unknown>(null);
   const [busy, setBusy] = useState(false);
+
+  // Signed-in users never see the sign-in form: send them to the
+  // dashboard. (Previously the form rendered for signed-in users
+  // alongside a stale "Access denied" box from an earlier failure.)
+  useEffect(() => {
+    if (!loading && user) navigate('/', { replace: true });
+  }, [loading, user, navigate]);
+
+  // A stale error from an earlier attempt must not survive a fresh
+  // visit to this page or a mode switch.
+  useEffect(() => {
+    setError(null);
+  }, [mode]);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -49,10 +62,18 @@ export default function Login() {
     <div className="auth-wrap">
       <h1>{mode === 'signin' ? 'Sign in' : 'Create account'}</h1>
       <div className="gold-rule" />
-      <p className="muted">
-        New accounts start as <strong>worker</strong> in the demo hub. Roles and
-        hub membership come from your organisation in production.
-      </p>
+      {mode === 'signin' ? (
+        <p className="muted">
+          Accounts are created by invitation from your organisation. Sign
+          in with the email your organisation invited.
+        </p>
+      ) : (
+        <p className="muted">
+          Enter the email your organisation invited. If no invitation
+          matches that email, signup is refused — ask your organisation
+          to invite you.
+        </p>
+      )}
       {!isFirebaseConfigured && !useEmulators && (
         <div className="notice">
           <strong>Firebase Project Setup Pending:</strong> Set your project's web config in <code>web/.env</code> or start local emulators with <code>VITE_USE_EMULATORS=true</code> to begin authenticating.
@@ -65,6 +86,7 @@ export default function Login() {
             <label htmlFor="displayName">Display name</label>
             <input
               id="displayName"
+              data-testid="login-display-name"
               value={displayName}
               onChange={(e) => setDisplayName(e.target.value)}
               required
@@ -100,9 +122,10 @@ export default function Login() {
           <button
             type="button"
             className="secondary"
+            data-testid="login-toggle-signup"
             onClick={() => setMode(mode === 'signin' ? 'signup' : 'signin')}
           >
-            {mode === 'signin' ? 'Need an account?' : 'Have an account?'}
+            {mode === 'signin' ? 'Have an invitation?' : 'Have an account?'}
           </button>
         </div>
       </form>

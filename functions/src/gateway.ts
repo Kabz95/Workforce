@@ -93,6 +93,7 @@ function grantFromDoc(doc: DocumentData): RoleGrant {
   return {
     id: doc.id,
     granteeId: d.granteeId,
+    granteeEmail: typeof d.granteeEmail === 'string' ? d.granteeEmail : undefined,
     role: d.role,
     scopeType: d.scopeType,
     scopeId: d.scopeId,
@@ -161,7 +162,7 @@ export async function syncClaimsForUser(uid: string): Promise<void> {
   await getAuth().setCustomUserClaims(uid, {
     ...existing,
     roles,
-    tenantId: tenantId ?? personTenant ?? 'demo-hub',
+    tenantId: tenantId ?? personTenant ?? null,
   });
 }
 
@@ -246,9 +247,9 @@ export const authorizeCommandFn = onCall(async (request) => {
     actingRole?: string | null;
   };
   const scope: PolicyScope = data.scope ?? {
-    tenantId: caller.claimsTenantId ?? 'demo-hub',
+    tenantId: caller.claimsTenantId ?? '',
     scopeType: 'hub',
-    scopeId: caller.claimsTenantId ?? 'demo-hub',
+    scopeId: caller.claimsTenantId ?? '',
   };
   const ctx = await resolveCommandContext(
     caller,
@@ -479,6 +480,164 @@ export const createRoleGrantFn = onCall(async (request) => {
 });
 
 // ---------------------------------------------------------------------------
+// inviteMember — an organisation admin invites a person by email.
+//
+// Creates a PENDING invitation: granteeEmail set (lowercased),
+// granteeId '' (no account yet), status 'pending'. The invitation
+// confers NOTHING until the invitee signs in with that email and
+// ensureMyPerson claims it (→ active, or → proposed when the
+// invitation needs review). Invitations expire after 30 days unless
+// the inviter sets a validUntil.
+//
+// Separation of duties: no self-invite (the inviter cannot invite
+// their own email), no systemAdmin invitations, and the SoD
+// evaluation runs against the invitee's existing grants when the
+// email already belongs to an account. Inviting the same
+// email+role+scope twice is idempotent (the existing invitation is
+// returned, no duplicate is created).
+// ---------------------------------------------------------------------------
+
+export const inviteMemberFn = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    granteeEmail?: string;
+    role?: string;
+    scopeType?: ScopeType;
+    scopeId?: string;
+    tenantId?: string;
+    validUntil?: string;
+    basis?: string;
+    purpose?: string;
+    actingGrantId?: string | null;
+    actingRole?: string | null;
+  };
+  if (!data.granteeEmail || !data.role || !data.scopeType || !data.scopeId || !data.tenantId || !data.basis) {
+    throw new HttpsError(
+      'invalid-argument',
+      'granteeEmail, role, scopeType, scopeId, tenantId, basis are required.',
+    );
+  }
+  const granteeEmail = data.granteeEmail.trim().toLowerCase();
+  if (!granteeEmail.includes('@')) {
+    throw new HttpsError('invalid-argument', 'granteeEmail must be an email address.');
+  }
+  if (data.role === 'systemAdmin') {
+    throw new HttpsError(
+      'permission-denied',
+      'Operational (systemAdmin) grants are never invited; they go through direct grant creation.',
+    );
+  }
+  // No self-invite: the inviter cannot invite their own email.
+  const callerUser = await getAuth().getUser(caller.uid);
+  if (typeof callerUser.email === 'string' && callerUser.email.toLowerCase() === granteeEmail) {
+    throw new HttpsError('permission-denied', 'You cannot invite yourself.');
+  }
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: data.tenantId },
+    true,
+  );
+  const actingGrant = ctx.actingGrant;
+  if (!actingGrant) {
+    throw new HttpsError('permission-denied', 'A live grant is required to invite members.');
+  }
+  if (!mayAuthorizeGrant(actingGrant.role, actingGrant.tenantId, data.tenantId)) {
+    throw new HttpsError(
+      'permission-denied',
+      'The acting grant does not authorize inviting members in this scope.',
+    );
+  }
+  const decision = authorizeCommand({
+    authenticated: true,
+    uid: caller.uid,
+    actingGrant,
+    claimsRoles: caller.claimsRoles,
+    useClaimsFallback: false,
+    command: 'inviteMember',
+    highRisk: true,
+    scope: { tenantId: data.tenantId, scopeType: data.scopeType, scopeId: data.scopeId },
+    relationship: 'member',
+    relationshipRequired: false,
+    purpose: data.purpose ?? 'invite a member',
+    consentRequired: false,
+    consentLive: null,
+  });
+  denyIfNotAllowed(decision);
+
+  // SoD against the invitee's existing grants when the email already
+  // belongs to an account; a brand-new email holds nothing.
+  let existingUid: string | null = null;
+  try {
+    existingUid = (await getAuth().getUserByEmail(granteeEmail)).uid;
+  } catch {
+    existingUid = null;
+  }
+  const subjectHeldRoles = existingUid ? (await liveGrantsFor(existingUid)).map((g) => g.role) : [];
+  const evaluation = evaluateGrantRequest({
+    subjectId: existingUid ?? '',
+    approverId: caller.uid,
+    requestedRole: data.role as AnyRole,
+    subjectHeldRoles,
+  });
+  if (evaluation.decision === 'deny') {
+    throw new HttpsError('permission-denied', evaluation.reason);
+  }
+  // Idempotent: an identical pending invitation is returned, not duplicated.
+  const dupSnap = await db
+    .collection(GRANTS)
+    .where('granteeEmail', '==', granteeEmail)
+    .where('role', '==', data.role)
+    .where('scopeType', '==', data.scopeType)
+    .where('scopeId', '==', data.scopeId)
+    .where('tenantId', '==', data.tenantId)
+    .where('status', '==', 'pending')
+    .limit(1)
+    .get();
+  if (!dupSnap.empty) {
+    return { ok: true, grantId: dupSnap.docs[0].id, status: 'pending', duplicate: true };
+  }
+  const validUntilMs = data.validUntil ? Date.parse(data.validUntil) : null;
+  if (data.validUntil && Number.isNaN(validUntilMs)) {
+    throw new HttpsError('invalid-argument', 'validUntil must be an ISO date.');
+  }
+  const effectiveValidUntilMs = validUntilMs ?? Date.now() + 30 * 24 * 60 * 60 * 1000;
+  const ref = db.collection(GRANTS).doc();
+  await db.runTransaction(async (tx) => {
+    tx.set(ref, {
+      granteeEmail,
+      granteeId: '',
+      role: data.role,
+      scopeType: data.scopeType,
+      scopeId: data.scopeId,
+      tenantId: data.tenantId,
+      status: 'pending',
+      validFrom: FieldValue.serverTimestamp(),
+      validUntil: Timestamp.fromMillis(effectiveValidUntilMs),
+      grantedBy: caller.uid,
+      basis: data.basis,
+      needsReview: evaluation.decision === 'needsReview',
+      reviewReason: evaluation.decision === 'needsReview' ? evaluation.reason : null,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    writeAccessEventInTx(tx, {
+      subjectId: '',
+      actorId: caller.uid,
+      action: 'inviteMember',
+      resourceType: 'roleGrant',
+      resourceId: ref.id,
+      actingRole: actingGrant.role,
+      actingGrantId: actingGrant.id ?? null,
+      purpose: data.purpose ?? 'invite a member',
+      correlationId: ref.id,
+      result: 'allowed',
+      detail: { granteeEmail, role: data.role, evaluation: evaluation.decision },
+    });
+  });
+  return { ok: true, grantId: ref.id, status: 'pending', needsReview: evaluation.decision === 'needsReview' };
+});
+
+// ---------------------------------------------------------------------------
 // resolveRoleGrant — approve / deny a proposed grant.
 // ---------------------------------------------------------------------------
 
@@ -568,7 +727,7 @@ export const revokeRoleGrantFn = onCall(async (request) => {
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Grant not found.');
   const grant = grantFromDoc(snap);
-  if (grant.status !== 'active' && grant.status !== 'suspended') {
+  if (grant.status !== 'active' && grant.status !== 'suspended' && grant.status !== 'pending') {
     throw new HttpsError('failed-precondition', `Grant is ${grant.status}; nothing to revoke.`);
   }
   const selfRelinquish = grant.granteeId === caller.uid;
@@ -606,7 +765,9 @@ export const revokeRoleGrantFn = onCall(async (request) => {
       detail: { role: grant.role, reason: data.reason ?? null },
     });
   });
-  await syncClaimsForUser(grant.granteeId);
+  // A pending invitation has no granteeId yet (''), so there are no
+  // claims to sync — guard the lookup.
+  if (grant.granteeId) await syncClaimsForUser(grant.granteeId);
   return { ok: true, grantId: ref.id, status: 'revoked' };
 });
 
@@ -627,6 +788,10 @@ export const declareConflictFn = onCall(async (request) => {
     throw new HttpsError('invalid-argument', 'description is required.');
   }
   const purpose = validatePurpose(data.purpose, 'declare a conflict');
+  const tenantId = data.tenantId ?? caller.claimsTenantId;
+  if (!tenantId) {
+    throw new HttpsError('invalid-argument', 'tenantId is required (pass it explicitly or sign in with a tenant claim).');
+  }
   const ref = db.collection(CONFLICTS).doc();
   await db.runTransaction(async (tx) => {
     tx.set(ref, {
@@ -634,7 +799,7 @@ export const declareConflictFn = onCall(async (request) => {
       grantId: data.grantId ?? null,
       description: data.description,
       mitigation: data.mitigation ?? null,
-      tenantId: data.tenantId ?? caller.claimsTenantId ?? 'demo-hub',
+      tenantId,
       status: 'open',
       createdAt: FieldValue.serverTimestamp(),
     });
@@ -911,31 +1076,114 @@ export const closeHandoffFn = onCall(async (request) => {
 });
 
 // ---------------------------------------------------------------------------
-// ensureMyPerson — create the caller's own persons doc, exactly once.
+// ensureMyPerson — claim pending invitations + ensure the caller's own
+// persons doc, exactly once.
+//
+// Production onboarding (invitation model):
+// 1. Claim: any PENDING invitation whose granteeEmail matches the
+//    caller's Auth email is claimed in a transaction — granteeId is
+//    set to the caller's uid and the status moves to active (or to
+//    proposed when the invitation needs review). Expired invitations
+//    are marked expired, never claimed. The transaction's
+//    status re-check makes claiming exactly-once under concurrent
+//    sign-ins: the first claim wins; a second caller finds no
+//    pending invitation for that email.
+// 2. Persons doc: created exactly once (transaction existence check).
+//    Its tenantId comes from the first claimed grant, else from the
+//    caller's claim tenant (a hint, not authority), else null — a
+//    bare record with NO roles and NO tenant. A bare record confers
+//    no access: the user exists but cannot act until the organisation
+//    grants them a role (via a new invitation, claimed on next sign-in).
+// 3. Claims sync: after a claim, claims are rebuilt from the now-live
+//    grants so the session picks the roles up immediately.
+//
+// The persons doc is created by the SERVER (Admin SDK), not by the
+// client: client creation of persons/users docs is denied by the
+// rules. This callable is the one path that works for every sign-in.
 // ---------------------------------------------------------------------------
 
 export const ensureMyPersonFn = onCall(async (request) => {
   const caller = callerFrom(request);
   const data = (request.data ?? {}) as { purpose?: string };
   const purpose = validatePurpose(data.purpose, 'person record setup');
-  // The persons doc is created by the SERVER (Admin SDK), not by the
-  // client: the rules' client-create path requires a claim tenant, and
-  // a fresh signup has no claims yet (the claim-less bootstrap). The
-  // callable is the one path that works for every signup. The
-  // transaction's existence check makes creation exactly-once, even
-  // under concurrent sign-ins.
   const user = await getAuth().getUser(caller.uid);
   const displayName = user.displayName ?? '';
   const email = user.email ?? '';
-  const tenantId = caller.claimsTenantId ?? 'demo-hub';
+  const emailLower = email.toLowerCase();
   const ref = db.collection(PERSONS).doc(caller.uid);
+  // NOTE: `claimed` is built inside the transaction callback and
+  // returned with it — never accumulated in a closure — because
+  // Firestore may retry the callback on contention, and a closure
+  // variable would duplicate entries across retries.
   const result = await db.runTransaction(async (tx) => {
+    const claimedInTx: Array<{ grantId: string; role: string; tenantId: string }> = [];
+    // Claim pending invitations for this email (re-checked inside the
+    // transaction so concurrent sign-ins cannot double-claim).
+    if (emailLower.length > 0) {
+      const pendingSnap = await tx.get(
+        db.collection(GRANTS)
+          .where('granteeEmail', '==', emailLower)
+          .where('status', '==', 'pending'),
+      );
+      for (const doc of pendingSnap.docs) {
+        const inv = doc.data() as {
+          role?: string;
+          tenantId?: string;
+          needsReview?: boolean;
+          validUntil?: Timestamp | null;
+        };
+        const grantRef = db.collection(GRANTS).doc(doc.id);
+        if (
+          inv.validUntil &&
+          typeof (inv.validUntil as Timestamp).toMillis === 'function' &&
+          (inv.validUntil as Timestamp).toMillis() < Date.now()
+        ) {
+          // Expired invitation: mark it dead, never claim it.
+          tx.update(grantRef, { status: 'expired', updatedAt: FieldValue.serverTimestamp() });
+          continue;
+        }
+        const toStatus = inv.needsReview ? 'proposed' : 'active';
+        tx.update(grantRef, {
+          granteeId: caller.uid,
+          status: toStatus,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+        writeAccessEventInTx(tx, {
+          subjectId: caller.uid,
+          actorId: caller.uid,
+          action: 'claimInvitation',
+          resourceType: 'roleGrant',
+          resourceId: doc.id,
+          actingRole: 'self',
+          actingGrantId: null,
+          purpose: 'claim an invitation',
+          correlationId: doc.id,
+          result: 'allowed',
+          detail: { role: inv.role ?? null, tenantId: inv.tenantId ?? null, toStatus },
+        });
+        claimedInTx.push({
+          grantId: doc.id,
+          role: typeof inv.role === 'string' ? inv.role : '',
+          tenantId: typeof inv.tenantId === 'string' ? inv.tenantId : '',
+        });
+      }
+    }
     const snap = await tx.get(ref);
-    if (snap.exists) return { created: false };
+    if (snap.exists) {
+      // Adopt the claimed tenant onto a bare record (tenantId null)
+      // so the persons doc reflects the user's organisation.
+      if (claimedInTx.length > 0 && (snap.data()?.tenantId ?? null) === null) {
+        tx.update(ref, {
+          tenantId: claimedInTx[0].tenantId,
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return { created: false, claimed: claimedInTx };
+    }
     tx.set(ref, {
       displayName,
       email,
-      tenantId,
+      tenantId: claimedInTx.length > 0 ? claimedInTx[0].tenantId : (caller.claimsTenantId ?? null),
       createdAt: FieldValue.serverTimestamp(),
       updatedAt: FieldValue.serverTimestamp(),
     });
@@ -951,8 +1199,11 @@ export const ensureMyPersonFn = onCall(async (request) => {
       correlationId: caller.uid,
       result: 'allowed',
     });
-    return { created: true };
+    return { created: true, claimed: claimedInTx };
   });
+  if (result.claimed.length > 0) {
+    await syncClaimsForUser(caller.uid);
+  }
   return { ok: true, ...result };
 });
 

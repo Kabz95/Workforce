@@ -19,7 +19,10 @@ import admin from 'firebase-admin';
 const PROJECT = process.env.FIREBASE_PROJECT || 'demo-workforce';
 
 export interface SeededUser {
-  uid: string;
+  /** Assigned at signup (the invitation claim), NOT at seeding:
+   *  globalSetup seeds pending invitations only. Resolve it after
+   *  signUp with getUidByEmail. */
+  uid?: string;
   email: string;
   password: string;
   role: string;
@@ -77,7 +80,28 @@ async function poll<T>(fn: () => Promise<T>, until: (v: T) => boolean, timeoutMs
   }
 }
 
-/** Find a first-contact form by owner + contact name (polls: the UI write lands async). */
+/** Resolve a signed-up user's uid: the persons doc id for their email (polls: the claim lands async). */
+export async function getUidByEmail(email: string, timeoutMs = 15_000): Promise<string> {
+  const store = adminDb();
+  const snap = await poll(
+    () => store.collection('persons').where('email', '==', email).get(),
+    (s) => !s.empty,
+    timeoutMs,
+    `persons doc for ${email}`,
+  );
+  return snap.docs[0].id;
+}
+
+/** Poll until the invitation for this email is claimed (status active, granteeId set). */
+export async function waitForClaim(email: string, timeoutMs = 15_000): Promise<void> {
+  const store = adminDb();
+  await poll(
+    () => store.collection('roleGrants').where('granteeEmail', '==', email).where('status', '==', 'active').get(),
+    (s) => !s.empty,
+    timeoutMs,
+    `active claimed grant for ${email}`,
+  );
+}
 export async function getFormIdByContactName(ownerUid: string, contactName: string): Promise<string> {
   const store = adminDb();
   const snap = await poll(
@@ -146,6 +170,27 @@ export async function shot(page: Page, testInfo: TestInfo, name: string): Promis
     body: await page.screenshot(),
     contentType: 'image/png',
   });
+}
+
+/** Sign up through the invitation-gated UI: "Have an invitation?" → create account → lands on the dashboard.
+ *  Pass a dashboardTestId for roles with a dashboard component; omit it
+ *  for roles that render the manifest fallback (e.g. hubCoordinator). */
+export async function signUp(page: Page, user: SeededUser, dashboardTestId?: string): Promise<void> {
+  await page.goto('/login');
+  await page.getByTestId('login-toggle-signup').click();
+  await page.getByTestId('login-display-name').fill(`E2E ${user.role}`);
+  await page.getByTestId('login-email').fill(user.email);
+  await page.getByTestId('login-password').fill(user.password);
+  await page.getByTestId('login-submit').click();
+  await expect(page).toHaveURL('/');
+  if (dashboardTestId) {
+    await expect(page.getByTestId(dashboardTestId)).toBeVisible();
+  } else {
+    await expect(page.locator('h1')).toContainText('Dashboard');
+  }
+  await expect(page.getByTestId('error-notice')).toHaveCount(0);
+  // Server state: the pending invitation was claimed on first sign-in.
+  await waitForClaim(user.email);
 }
 
 /** Sign in through the Login page; waits for the role dashboard to render (grants loaded).

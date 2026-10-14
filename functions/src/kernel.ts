@@ -54,6 +54,7 @@ export type Circle =
 export type ScopeType = 'self' | 'hub' | 'network' | 'employer';
 
 export type GrantStatus =
+  | 'pending'
   | 'proposed'
   | 'active'
   | 'suspended'
@@ -288,6 +289,14 @@ export function migrateLegacyRole(
 export interface RoleGrant {
   id?: string;
   granteeId: string;
+  /**
+   * Invitee email (lowercased) for PENDING invitations. A pending
+   * invitation has granteeId '' (no account yet) and is claimed by
+   * ensureMyPerson when a user signs in with this email: granteeId
+   * is set to their uid and the status moves to active (or proposed
+   * when the invitation needs review). Present only on invitations.
+   */
+  granteeEmail?: string;
   role: AnyRole;
   scopeType: ScopeType;
   /** hub id for hub scope, employer id for employer scope, 'network' for network, uid for self. */
@@ -340,6 +349,11 @@ export function selectDefaultGrant(
 // ---------------------------------------------------------------------------
 
 const GRANT_TRANSITIONS: Readonly<Record<GrantStatus, readonly GrantStatus[]>> = {
+  // Pending = invitation awaiting claim by the invitee. Claiming moves
+  // it to active (or to proposed when the invitation needs review);
+  // the inviter may cancel it (→ revoked); an expired invitation is
+  // marked expired by the claim path instead of being claimed.
+  pending: ['active', 'proposed', 'revoked', 'expired'],
   proposed: ['active', 'revoked'],
   active: ['suspended', 'expired', 'revoked'],
   suspended: ['active', 'revoked', 'expired'],
@@ -488,6 +502,8 @@ export const PURPOSE_TAXONOMY: readonly string[] = [
   'request a role grant',
   'respond to a handoff',
   'person record setup',
+  'invite a member',
+  'claim an invitation',
 ];
 
 /** True when the purpose is one of the taxonomy's canonical phrases. */
@@ -521,6 +537,7 @@ export type CommandName =
   | 'requestRoleGrant'
   | 'declareConflict'
   | 'ensureMyPerson'
+  | 'inviteMember'
   | 'getMyGrants';
 
 export interface CommandMatrixEntry {
@@ -604,7 +621,12 @@ export const COMMAND_MATRIX: Readonly<Record<CommandName, CommandMatrixEntry>> =
   ensureMyPerson: {
     roles: 'any',
     highRisk: false,
-    note: 'Bootstrap: creates the caller’s own persons doc exactly once. No live grant required (it runs before grants exist).',
+    note: 'Bootstrap: creates the caller’s own persons doc exactly once, and claims any pending invitations for the caller’s email. No live grant required (it runs before grants exist).',
+  },
+  inviteMember: {
+    roles: GRANT_AUTHORITIES,
+    highRisk: true,
+    note: 'Creates a PENDING invitation keyed by email. Hub authorities act only within their tenant; council/backboneLead act network-wide. No self-invite; no systemAdmin invitations.',
   },
   getMyGrants: {
     roles: 'any',

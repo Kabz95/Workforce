@@ -47,27 +47,39 @@ firebase deploy           # rules + indexes + functions + hosting
 
 What deploys: `firestore.rules`, `firestore.indexes.json`, the six Cloud Functions, and the web app (`web/dist`).
 
-## 6. Bootstrap the first admin
+## 6. Bootstrap the first hub (one-time)
 
-New users sign up with no role. The first admin/governance accounts need their role + tenant set via custom claims — there is no Console button for this. Use the script (one-time, needs a service-account key — see below):
+Production onboarding is invitation-based: there is no open
+self-registration and no default role. The first hub and the first
+administrator are seeded with the one-time script (it refuses to run
+twice — it checks for an existing backboneLead grant first):
 
 ```bash
 cd functions
-GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json \
-  node set-claims.cjs <USER_UID> <ROLE> <TENANT_ID>
-# e.g. node set-claims.cjs abc123 governance demo-hub
-# roles: worker | navigator | supervisor | employer | hubAdmin | governance | backboneAnalyst | systemAdmin
+node scripts/seed-first-hub.mjs \
+  --project peerworkforce \
+  --tenant <TENANT_ID> \
+  --name "<HUB DISPLAY NAME>" \
+  --email <FIRST_ADMIN_EMAIL>
 ```
 
-Service-account key: Console → Project settings → Service accounts → **Generate new private key**. Treat the downloaded JSON like a password: use it once for this script, then delete the file. Never commit it.
+The script creates `tenants/<TENANT_ID>` plus two PENDING invitations
+(backboneLead + hubCoordinator) for that email. The administrator
+then signs up in the app with that email; `ensureMyPerson` claims
+both invitations on first sign-in. Delete the script after use
+(`rm functions/scripts/seed-first-hub.mjs`).
 
-The user must sign out and back in for the new claims to take effect (claims ride on the ID token).
+If you are migrating from a demo dataset, remove it first — see
+[`REMOVE-DEMO.md`](REMOVE-DEMO.md). The script takes no secrets: the
+project, tenant, name, and email come from argv. Run it in Cloud
+Shell with Application Default Credentials; no service-account key
+file is needed.
 
 ## 7. Verify
 
-- Open the Hosting URL. Sign up, then sign in.
+- Open the Hosting URL. Sign up with an invited email (or sign in).
 - As a worker: create a profile + first-contact form, grant a consent, revoke it, export your data.
-- As governance (after claims): open Governance and Aggregates.
+- As governance (after claiming an invitation): open Governance and Aggregates.
 - Check **Firestore → Usage** and **Functions → Logs** for errors.
 
 ## Costs (pilot scale)

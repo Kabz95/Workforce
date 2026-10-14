@@ -247,6 +247,7 @@ const declareConflictFn = httpsCallable(functions, 'declareConflict');
 const createHandoffFn = httpsCallable(functions, 'createHandoff');
 const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
 const closeHandoffFn = httpsCallable(functions, 'closeHandoff');
+const inviteMemberFn = httpsCallable(functions, 'inviteMember');
 
 export async function grantConsent(
   granterId: string,
@@ -345,15 +346,22 @@ export async function getDeletionRequest(requestId: string): Promise<WithId<Dele
   return toDoc<DeletionRequest>(snap);
 }
 
-/** Create the caller's own persons doc, exactly once (server-side).
+/** Create the caller's own persons doc, exactly once (server-side),
+ *  and claim any pending invitations for the caller's email.
  *  Called once per session from AuthContext after sign-in. */
-export async function ensureMyPerson(acting?: ActingInput): Promise<{ created: boolean }> {
+export async function ensureMyPerson(acting?: ActingInput): Promise<{
+  created: boolean;
+  claimed: Array<{ grantId: string; role: string; tenantId: string }>;
+}> {
   const result = await ensureMyPersonFn({
     actingGrantId: acting?.actingGrantId ?? null,
     actingRole: acting?.actingRole ?? null,
     purpose: acting?.purpose ?? 'person record setup',
   });
-  return result.data as { created: boolean };
+  return result.data as {
+    created: boolean;
+    claimed: Array<{ grantId: string; role: string; tenantId: string }>;
+  };
 }
 
 // --- Role grants, conflicts, handoffs (Role Kernel) ---
@@ -378,6 +386,39 @@ export async function requestRoleGrant(
     purpose: acting?.purpose ?? 'request a role grant',
     idempotencyKey: newIdempotencyKey(),
   });
+}
+
+/**
+ * Invite a member by email (creates a PENDING invitation).
+ * Coordinator/backboneLead only (enforced server-side). The
+ * invitation confers nothing until the invitee signs in with that
+ * email and ensureMyPerson claims it.
+ */
+export async function inviteMember(
+  data: {
+    granteeEmail: string;
+    role: string;
+    scopeType: string;
+    scopeId: string;
+    tenantId: string;
+    validUntil?: string;
+    basis: string;
+  },
+  acting?: ActingInput,
+): Promise<{ ok: boolean; grantId: string; status: string; duplicate?: boolean; needsReview?: boolean }> {
+  const result = await inviteMemberFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'invite a member',
+  });
+  return result.data as {
+    ok: boolean;
+    grantId: string;
+    status: string;
+    duplicate?: boolean;
+    needsReview?: boolean;
+  };
 }
 
 /** Declare a conflict of interest (gateway declareConflict shape). */

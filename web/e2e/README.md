@@ -1,8 +1,8 @@
 # End-to-end walkthrough (Playwright)
 
-Automates the Phase 2 eight-step acceptance walkthrough against the
-**Firebase emulators** (project `demo-workforce`) — never the live
-project, never real data. One test, eight sequential steps; a failure
+Automates the invitation-signup prologue + the seven acceptance
+steps against the **Firebase emulators** (project `demo-workforce`)
+— never the live project, never real data. One test; a failure
 stops the run at the first broken step, with a screenshot attached
 per step in the HTML report.
 
@@ -18,11 +18,15 @@ firebase emulators:start --project demo-workforce --only auth,firestore,function
 npm run test:e2e
 ```
 
-The `globalSetup` seeds three disposable test accounts (worker /
-navigator / hubCoordinator) into the emulators and writes their
-credentials to `web/e2e/.e2e-users.json` (gitignored). The spec then
-drives the real app in Chromium:
+Production onboarding: `globalSetup` seeds only PENDING
+invitations (no Auth users, no claims, no persons/users docs) and
+writes the invited emails to `web/e2e/.e2e-users.json`
+(gitignored). The spec then drives the real app in Chromium:
 
+0. Each account (worker / navigator / coordinator) signs up via the
+   invitation-gated UI ("Have an invitation?") → `ensureMyPerson`
+   claims the pending grant on first sign-in; the uid is resolved
+   from the persons doc by email.
 1. Worker signs in → dashboard; creates a worker profile + two
    first-contact forms (one to share, one never shared).
 2. Worker grants the navigator access to the shared form (Consents

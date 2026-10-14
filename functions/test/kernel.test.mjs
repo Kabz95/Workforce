@@ -228,6 +228,17 @@ describe('grant lifecycle (validateGrantTransition)', () => {
     assert.equal(validateGrantTransition('suspended', 'active', 'approver-1', grant).ok, true);
   });
 
+  it('allows pending→active/proposed/revoked/expired (invitation lifecycle)', () => {
+    assert.equal(validateGrantTransition('pending', 'active', 'approver-1', grant).ok, true);
+    assert.equal(validateGrantTransition('pending', 'proposed', 'approver-1', grant).ok, true);
+    assert.equal(validateGrantTransition('pending', 'revoked', 'approver-1', grant).ok, true);
+    assert.equal(validateGrantTransition('pending', 'expired', 'approver-1', grant).ok, true);
+  });
+
+  it('forbids pending→suspended and other non-transitions', () => {
+    assert.equal(validateGrantTransition('pending', 'suspended', 'approver-1', grant).ok, false);
+  });
+
   it('forbids terminal transitions and non-transitions', () => {
     assert.equal(validateGrantTransition('revoked', 'active', 'approver-1', grant).ok, false);
     assert.equal(validateGrantTransition('expired', 'active', 'approver-1', grant).ok, false);
@@ -475,7 +486,7 @@ describe('purpose taxonomy (Phase 2)', () => {
       'resolve a proposed grant', 'revoke a role grant',
       'declare a conflict', 'request a role grant',
       'respond to a handoff', 'handoff coordination',
-      'person record setup',
+      'person record setup', 'invite a member', 'claim an invitation',
     ]) {
       assert.equal(isValidPurpose(p), true, p);
     }
@@ -532,12 +543,21 @@ describe('central role → command matrix (Phase 2)', () => {
     }
   });
 
+  it('commandAllowsRole gates inviteMember (grant authorities only)', () => {
+    for (const role of ['council', 'backboneLead', 'hubCoordinator', 'steeringCircle']) {
+      assert.equal(commandAllowsRole('inviteMember', role), true, role);
+    }
+    assert.equal(commandAllowsRole('inviteMember', 'worker'), false);
+    assert.equal(commandAllowsRole('inviteMember', 'systemAdmin'), false);
+  });
+
   it('every gateway callable is in the matrix', () => {
     for (const cmd of [
       'grantAccess', 'requestExport', 'requestDeletion', 'processDeletion',
       'createHandoff', 'respondHandoff', 'closeHandoff',
       'createRoleGrant', 'resolveRoleGrant', 'revokeRoleGrant',
       'requestRoleGrant', 'declareConflict', 'ensureMyPerson', 'getMyGrants',
+      'inviteMember',
     ]) {
       assert.ok(COMMAND_MATRIX[cmd], cmd);
       assert.equal(typeof COMMAND_MATRIX[cmd].highRisk, 'boolean', cmd);

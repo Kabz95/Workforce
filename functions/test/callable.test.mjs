@@ -6,7 +6,7 @@
  * requestDeletion job + processDeletion, the onConsentRevoke trigger)
  * against the EMULATOR stack — never against the live project.
  *
- * REQUIRES the emulators running with a DEMO project (the Functions
+ * REQUIRES the emulators running with an EMULATOR project (the Functions
  * emulator serves one project; the test seeds that project):
  *
  *   cd workforce-platform/functions && npm run build
@@ -518,5 +518,169 @@ describe('requestExport auth gate (Phase 2)', () => {
       assert.notEqual(err.code, 'permission-denied', 'worker should pass the export auth gate');
       assert.match(String(err.code), /internal|unknown|storage|not-found/);
     }
+  });
+});
+
+describe('invitations (production onboarding)', () => {
+  /** Mint an ID token for an email/password account (Auth emulator REST). */
+  async function mintToken(email, password = 'Test1234!') {
+    const res = await fetch(
+      `http://${AUTH_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake-api-key`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      },
+    );
+    const body = await res.json();
+    if (!body.idToken) throw new Error(`Token mint failed for ${email}: ${JSON.stringify(body)}`);
+    return body.idToken;
+  }
+
+  /** An Auth user with NO claims and NO grants (bare account). */
+  async function makeBareUser(email) {
+    const user = await auth.createUser({ email, password: 'Test1234!' });
+    createdUids.push(user.uid);
+    return { uid: user.uid, email, token: await mintToken(email) };
+  }
+
+  function inviteArgs(email, overrides = {}) {
+    return {
+      granteeEmail: email,
+      role: 'worker',
+      scopeType: 'self',
+      scopeId: email,
+      tenantId: HUB,
+      basis: 'invitation-test',
+      purpose: 'invite a member',
+      ...overrides,
+    };
+  }
+
+  it('coordinator invites an email → pending invitation (granteeId empty, nothing conferred)', async () => {
+    const coord = await makeUser('hubCoordinator');
+    const email = `invited-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const result = await callFn('inviteMember', coord.token, inviteArgs(email));
+    assert.equal(result.status, 'pending');
+    const snap = await db.collection('roleGrants').doc(result.grantId).get();
+    assert.equal(snap.data().granteeEmail, email);
+    assert.equal(snap.data().granteeId, '');
+    assert.equal(snap.data().status, 'pending');
+    assert.equal(snap.data().needsReview, false);
+  });
+
+  it('invitee signs up with the invited email → ensureMyPerson claims it → active grant + persons doc', async () => {
+    const coord = await makeUser('hubCoordinator');
+    const email = `claim-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const invited = await callFn('inviteMember', coord.token, inviteArgs(email));
+    const invitee = await makeBareUser(email);
+    const claimed = await callFn('ensureMyPerson', invitee.token, {});
+    assert.equal(claimed.claimed.length, 1);
+    assert.equal(claimed.claimed[0].grantId, invited.grantId);
+    const snap = await db.collection('roleGrants').doc(invited.grantId).get();
+    assert.equal(snap.data().granteeId, invitee.uid);
+    assert.equal(snap.data().status, 'active');
+    const person = await db.collection('persons').doc(invitee.uid).get();
+    assert.equal(person.exists, true);
+    assert.equal(person.data().tenantId, HUB);
+    assert.equal(person.data().email, email);
+    const grants = await callFn('getMyGrants', invitee.token, {});
+    assert.ok(grants.grants.some((g) => g.id === invited.grantId && g.live === true));
+  });
+
+  it('signup without an invitation → bare persons doc, no grants, no access', async () => {
+    const email = `bare-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const bare = await makeBareUser(email);
+    const result = await callFn('ensureMyPerson', bare.token, {});
+    assert.equal(result.created, true);
+    assert.deepEqual(result.claimed, []);
+    const person = await db.collection('persons').doc(bare.uid).get();
+    assert.equal(person.exists, true);
+    assert.equal(person.data().tenantId, null);
+    const grants = await callFn('getMyGrants', bare.token, {});
+    assert.deepEqual(grants.grants, []);
+  });
+
+  it('self-invite is denied; non-authority cannot invite; systemAdmin invitations are denied', async () => {
+    const coord = await makeUser('hubCoordinator');
+    await assert.rejects(
+      callFn('inviteMember', coord.token, inviteArgs(coord.email)),
+      (e) => e.code === 'permission-denied',
+    );
+    const worker = await makeUser('worker');
+    await assert.rejects(
+      callFn('inviteMember', worker.token, inviteArgs(`x-${RUN}@example.test`)),
+      (e) => e.code === 'permission-denied',
+    );
+    await assert.rejects(
+      callFn('inviteMember', coord.token, inviteArgs(`y-${RUN}@example.test`, { role: 'systemAdmin' })),
+      (e) => e.code === 'permission-denied',
+    );
+  });
+
+  it('inviting the same email+role+scope twice is idempotent (no duplicate)', async () => {
+    const coord = await makeUser('hubCoordinator');
+    const email = `dup-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const first = await callFn('inviteMember', coord.token, inviteArgs(email));
+    const second = await callFn('inviteMember', coord.token, inviteArgs(email));
+    assert.equal(second.grantId, first.grantId);
+    assert.equal(second.duplicate, true);
+    const snap = await db.collection('roleGrants')
+      .where('granteeEmail', '==', email)
+      .where('status', '==', 'pending')
+      .get();
+    assert.equal(snap.size, 1);
+  });
+
+  it('an expired invitation is marked expired, never claimed', async () => {
+    const email = `expired-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const ref = await db.collection('roleGrants').add({
+      granteeEmail: email,
+      granteeId: '',
+      role: 'worker',
+      scopeType: 'self',
+      scopeId: email,
+      tenantId: HUB,
+      status: 'pending',
+      validFrom: new Date(Date.now() - 86400000),
+      validUntil: new Date(Date.now() - 1000),
+      grantedBy: 'test',
+      basis: 'expired-invitation-test',
+      needsReview: false,
+    });
+    const bare = await makeBareUser(email);
+    const result = await callFn('ensureMyPerson', bare.token, {});
+    assert.deepEqual(result.claimed, []);
+    const snap = await ref.get();
+    assert.equal(snap.data().status, 'expired');
+    const person = await db.collection('persons').doc(bare.uid).get();
+    assert.equal(person.data().tenantId, null);
+  });
+
+  it('a needs-review invitation claims to proposed (not active) until resolved', async () => {
+    // Inviting an existing worker to the employer role is the
+    // high-risk employer + inside-role combination → needsReview.
+    const worker = await makeUser('worker');
+    const coord = await makeUser('hubCoordinator');
+    const invited = await callFn('inviteMember', coord.token, inviteArgs(worker.email, {
+      role: 'employer', scopeType: 'employer', scopeId: 'employer-1',
+    }));
+    assert.equal(invited.needsReview, true);
+    const claimed = await callFn('ensureMyPerson', worker.token, {});
+    assert.ok(claimed.claimed.some((c) => c.grantId === invited.grantId));
+    const snap = await db.collection('roleGrants').doc(invited.grantId).get();
+    assert.equal(snap.data().status, 'proposed');
+    assert.equal(snap.data().granteeId, worker.uid);
+  });
+
+  it('a pending invitation can be cancelled (revoked) before claim', async () => {
+    const coord = await makeUser('hubCoordinator');
+    const email = `cancel-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`;
+    const invited = await callFn('inviteMember', coord.token, inviteArgs(email));
+    const revoked = await callFn('revokeRoleGrant', coord.token, { grantId: invited.grantId });
+    assert.equal(revoked.status, 'revoked');
+    const bare = await makeBareUser(email);
+    const result = await callFn('ensureMyPerson', bare.token, {});
+    assert.deepEqual(result.claimed, []);
   });
 });

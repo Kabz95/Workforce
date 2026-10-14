@@ -74,6 +74,8 @@ export const PURPOSE_TAXONOMY: readonly string[] = [
   'request a role grant',
   'respond to a handoff',
   'person record setup',
+  'invite a member',
+  'claim an invitation',
 ];
 
 /**
@@ -202,6 +204,8 @@ export interface Person {
  *  getMyGrants callable returns epoch ms. Use toMillis() to read. */
 export interface RoleGrant {
   granteeId: string;
+  /** Invitee email (lowercased) for PENDING invitations; absent otherwise. */
+  granteeEmail?: string;
   role: AnyRole;
   scopeType: ScopeType;
   scopeId: string;

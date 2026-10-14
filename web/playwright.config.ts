@@ -11,13 +11,13 @@ import { defineConfig, devices } from '@playwright/test';
  *   npm run test:e2e
  *
  * The webServer step rebuilds the app with VITE_USE_EMULATORS=true and
- * a forced demo-workforce config (real env vars override any local
+ * a forced emulator-project config (real env vars override any local
  * web/.env, so a stray .env can never point the spec at a real
  * project). Retries are 0 on purpose: the CI workflow retries the
  * whole command against a fresh emulator instead, so a retried spec
  * never runs against state left by a failed attempt.
  */
-const DEMO_FIREBASE_ENV = [
+const EMULATOR_FIREBASE_ENV = [
   'VITE_USE_EMULATORS=true',
   'VITE_FIREBASE_API_KEY=demo-workforce-api-key',
   'VITE_FIREBASE_AUTH_DOMAIN=demo-workforce.firebaseapp.com',
@@ -48,7 +48,7 @@ export default defineConfig({
   },
   globalSetup: './e2e/global-setup.ts',
   webServer: {
-    command: `${DEMO_FIREBASE_ENV} npm run build && npx vite preview --port 4173 --strictPort`,
+    command: `${EMULATOR_FIREBASE_ENV} npm run build && npx vite preview --port 4173 --strictPort`,
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,

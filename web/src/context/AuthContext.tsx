@@ -13,12 +13,12 @@ import {
   signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
+  updateProfile,
   type User,
 } from 'firebase/auth';
-import { doc, setDoc } from 'firebase/firestore';
 import { httpsCallable } from 'firebase/functions';
-import { auth, db, functions } from '../lib/firebase';
-import type { AnyRole, RoleGrant, Role } from '../lib/types';
+import { auth, functions } from '../lib/firebase';
+import type { AnyRole, RoleGrant } from '../lib/types';
 import { ROLE_DEFAULT_ORDER, canonicalRole, toMillis } from '../lib/types';
 import { clearRoleScopedState } from '../lib/roleState';
 import { ensureMyPerson } from '../lib/queries';
@@ -40,6 +40,30 @@ export function grantIsLiveClient(grant: RoleGrant, nowMs: number = Date.now()):
   const until = toMillis(grant.validUntil);
   if (until !== null && nowMs > until) return false;
   return true;
+}
+
+/**
+ * After sign-in/up: claim any pending invitation (server-side,
+ * best-effort — the auth-state listener also attempts it), then
+ * refuse the session when the account holds no live grant. A bare
+ * account (no invitation) gets a clear message and is signed out,
+ * instead of landing on a broken dashboard.
+ */
+async function requireLiveGrantOrRefuse(): Promise<void> {
+  try {
+    await ensureMyPerson();
+  } catch {
+    // Transient claim failure: fall through to the grants check.
+    // A user with existing grants still passes; a new user retries
+    // via sign-in, which re-attempts the claim.
+  }
+  const result = await getMyGrantsFn({});
+  const payload = result.data as { grants: (RoleGrant & { id: string })[] };
+  const hasLive = (payload.grants ?? []).some((g) => grantIsLiveClient(g));
+  if (!hasLive) {
+    await signOut(auth);
+    throw new Error(NO_INVITATION_MESSAGE);
+  }
 }
 
 /**
@@ -80,10 +104,16 @@ export interface AuthState {
 
 const AuthContext = createContext<AuthState | null>(null);
 
-const DEFAULT_TENANT = 'demo-hub';
-const DEFAULT_ROLE: Role = 'worker';
-
+/**
+ * Production onboarding: no demo defaults. A user with no claims and
+ * no grants has NO roles and NO tenant (bare record) — never a
+ * default worker capacity in a default hub. Fail-closed: no live
+ * grant → no acting capacity → ProtectedRoute denies access.
+ */
 const getMyGrantsFn = httpsCallable(functions, 'getMyGrants');
+
+const NO_INVITATION_MESSAGE =
+  'No active invitation or role grant for this account. Ask your organisation to invite you.';
 
 /** Pick the default acting role from held roles: worker if held, else least-privileged. */
 export function defaultActingRole(roles: AnyRole[]): AnyRole | null {
@@ -99,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [grants, setGrants] = useState<(RoleGrant & { id: string })[]>([]);
   const [actingRole, setActingRole] = useState<AnyRole | null>(null);
   const [grantsSource, setGrantsSource] = useState<'grants' | 'claims-fallback' | null>(null);
-  const [tenantId, setTenantId] = useState<string>(DEFAULT_TENANT);
+  const [tenantId, setTenantId] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [grantsLoading, setGrantsLoading] = useState(false);
 
@@ -160,15 +190,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               ? [claims.role]
               : [];
           // Canonicalise: legacy claim roles map to their replacements.
+          // No fallback: a user with no claims has no roles (bare
+          // record) — never a default worker capacity.
           const claimedRoles: AnyRole[] = rawRoles
             .map((r) => canonicalRole(r))
             .filter((r): r is AnyRole => r !== null);
-          const effectiveRoles = claimedRoles.length > 0 ? claimedRoles : [DEFAULT_ROLE];
+          const effectiveRoles = claimedRoles;
           setRoles(effectiveRoles);
           setTenantId(
             typeof claims.tenantId === 'string' && claims.tenantId.length > 0
               ? claims.tenantId
-              : DEFAULT_TENANT,
+              : '',
           );
           // Default acting capacity: worker if held, else least-privileged.
           setActingRole(defaultActingRole(effectiveRoles));
@@ -198,9 +230,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             setGrantsLoading(false);
           }
         } catch {
-          setRoles([DEFAULT_ROLE]);
-          setTenantId(DEFAULT_TENANT);
-          setActingRole(DEFAULT_ROLE);
+          // No claims readable: bare record — no roles, no tenant.
+          setRoles([]);
+          setTenantId('');
+          setActingRole(null);
           setGrantsSource('claims-fallback');
         }
       } else {
@@ -208,7 +241,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setGrants([]);
         setActingRole(null);
         setGrantsSource(null);
-        setTenantId(DEFAULT_TENANT);
+        setTenantId('');
       }
       setLoading(false);
     });
@@ -234,34 +267,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signIn = async (email: string, password: string): Promise<void> => {
     await signInWithEmailAndPassword(auth, email, password);
+    await requireLiveGrantOrRefuse();
   };
 
   const signUp = async (email: string, password: string, displayName: string): Promise<void> => {
+    // Production onboarding: the Auth account is created, then the
+    // server claims any pending invitation for this email. There is
+    // NO client-created users/persons doc (the rules deny it) and
+    // NO default worker role. If no live grant results, the session
+    // is refused with the no-invitation message.
     const cred = await createUserWithEmailAndPassword(auth, email, password);
-    // Create the users/{uid} profile doc. Roles/tenant come from custom claims
-    // in production; the doc carries the same defaults for emulator dev.
-    await setDoc(doc(db, 'users', cred.user.uid), {
-      displayName,
-      email,
-      tenantId: DEFAULT_TENANT,
-      roles: [DEFAULT_ROLE],
-      createdAt: new Date(),
-    });
+    if (displayName) {
+      await updateProfile(cred.user, { displayName });
+    }
+    await requireLiveGrantOrRefuse();
   };
 
   const signInGoogle = async (): Promise<void> => {
     const provider = new GoogleAuthProvider();
-    const cred = await signInWithPopup(auth, provider);
-    await setDoc(
-      doc(db, 'users', cred.user.uid),
-      {
-        displayName: cred.user.displayName ?? '',
-        email: cred.user.email ?? '',
-        tenantId: DEFAULT_TENANT,
-        roles: [DEFAULT_ROLE],
-      },
-      { merge: true },
-    );
+    await signInWithPopup(auth, provider);
+    await requireLiveGrantOrRefuse();
   };
 
   const doSignOut = async (): Promise<void> => {

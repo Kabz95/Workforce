@@ -245,6 +245,20 @@
       "collectionGroup": "roleGrants",
       "fields": [
         {
+          "fieldPath": "granteeEmail",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "status",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "roleGrants",
+      "fields": [
+        {
           "fieldPath": "granteeId",
           "order": "ASCENDING"
         },

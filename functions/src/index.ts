@@ -59,6 +59,7 @@ export {
   createHandoffFn as createHandoff,
   respondHandoffFn as respondHandoff,
   closeHandoffFn as closeHandoff,
+  inviteMemberFn as inviteMember,
   ensureMyPersonFn as ensureMyPerson,
 } from './gateway';
 
@@ -346,7 +347,7 @@ export const requestExport = onCall(async (request) => {
   if (idem.seen) return idem.result;
   const ctx = await resolveCommandContext(
     caller,
-    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? 'demo-hub' },
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
     true,
     true, // migration bridge
   );
@@ -358,7 +359,7 @@ export const requestExport = onCall(async (request) => {
     useClaimsFallback: ctx.migrationFallback,
     command: 'requestExport',
     highRisk: true,
-    scope: { tenantId: caller.claimsTenantId ?? 'demo-hub', scopeType: 'self', scopeId: uid },
+    scope: { tenantId: caller.claimsTenantId ?? '', scopeType: 'self', scopeId: uid },
     relationship: 'owner',
     relationshipRequired: true,
     purpose: data.purpose ?? 'export my data',
@@ -680,7 +681,7 @@ export const requestDeletion = onCall(async (request) => {
   const uid = caller.uid;
   const ctx = await resolveCommandContext(
     caller,
-    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? 'demo-hub' },
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
     true,
     true, // migration bridge
   );
@@ -692,7 +693,7 @@ export const requestDeletion = onCall(async (request) => {
     useClaimsFallback: ctx.migrationFallback,
     command: 'requestDeletion',
     highRisk: true,
-    scope: { tenantId: caller.claimsTenantId ?? 'demo-hub', scopeType: 'self', scopeId: uid },
+    scope: { tenantId: caller.claimsTenantId ?? '', scopeType: 'self', scopeId: uid },
     relationship: 'owner',
     relationshipRequired: true,
     purpose: data.purpose ?? 'delete my data',
@@ -767,7 +768,7 @@ export const processDeletion = onCall(async (request) => {
   }
   const ctx = await resolveCommandContext(
     caller,
-    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? 'demo-hub' },
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
     true,
     true, // migration bridge
   );
@@ -779,7 +780,7 @@ export const processDeletion = onCall(async (request) => {
     useClaimsFallback: ctx.migrationFallback,
     command: 'processDeletion',
     highRisk: true,
-    scope: { tenantId: caller.claimsTenantId ?? 'demo-hub', scopeType: 'self', scopeId: caller.uid },
+    scope: { tenantId: caller.claimsTenantId ?? '', scopeType: 'self', scopeId: caller.uid },
     relationship: 'owner',
     relationshipRequired: true,
     purpose: data.purpose ?? 'delete my data',

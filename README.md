@@ -46,14 +46,16 @@ firebase emulators:start
 firebase deploy --only firestore:rules,firestore:indexes,functions,hosting
 ```
 
-Full production checklist: see [`DEPLOY.md`](DEPLOY.md) — project creation, Blaze billing note for Functions, first-admin bootstrap via `functions/set-claims.cjs`, verification.
+Full production checklist: see [`DEPLOY.md`](DEPLOY.md) — project creation, Blaze billing note for Functions, first-hub seeding via `functions/scripts/seed-first-hub.mjs`, verification.
 
-### Setting roles (custom claims)
-New users sign up as `worker` in tenant `demo-hub`. Assign other roles with the Admin SDK, e.g.:
-
-```js
-await getAuth().setCustomUserClaims(uid, { role: 'navigator', tenantId: 'demo-hub' });
-```
+### Onboarding (invitation model)
+Accounts are created by invitation from an organisation. An admin
+(coordinator / backboneLead) calls `inviteMember` with the invitee's
+email, role, and scope; the invitation is a PENDING grant. When the
+invitee signs in with that email, `ensureMyPerson` claims it (→ active,
+or → proposed when it needs review). Signup without a matching
+invitation is refused. There is no open self-registration and no
+default role or tenant: an account with no live grant has no access.
 
 ## Rules summary (`firestore.rules`)
 

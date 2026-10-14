@@ -407,26 +407,38 @@ describe('no cross-role leakage', () => {
   });
 });
 
-describe('users bootstrap', () => {
-  it('claim-less user creates own doc in demo-hub with worker role only', async () => {
-    const fresh = testEnv.unauthenticatedContext();
-    // Unauthenticated cannot; an authenticated claim-less user can.
+describe('production onboarding — no client bootstrap', () => {
+  it('claim-less users CANNOT create users or persons docs (server-only)', async () => {
     const noClaims = testEnv.authenticatedContext('new-user', {});
-    const ref = noClaims.firestore().doc('users/new-user');
-    await ref.set({
-      displayName: 'New', email: 'n@example.test', tenantId: 'demo-hub', roles: ['worker'],
-    });
-    const snap = await ref.get();
-    assert.equal(snap.exists, true);
-    // A different claim-less user cannot bootstrap with a privileged role.
-    const noClaims2 = testEnv.authenticatedContext('new-user-2', {});
     await assert.rejects(
-      noClaims2.firestore().doc('users/new-user-2').set({
-        displayName: 'New', email: 'n@example.test', tenantId: 'demo-hub',
-        roles: ['hubCoordinator'],
+      noClaims.firestore().doc('users/new-user').set({
+        displayName: 'New', email: 'n@example.test', tenantId: HUB, roles: ['worker'],
       }),
     );
-    await assert.rejects(fresh.firestore().doc('users/x').set({ tenantId: 'demo-hub', roles: ['worker'] }));
+    await assert.rejects(
+      noClaims.firestore().doc('persons/new-user').set({
+        displayName: 'New', email: 'n@example.test', tenantId: HUB,
+      }),
+    );
+    // Unauthenticated cannot either.
+    const fresh = testEnv.unauthenticatedContext();
+    await assert.rejects(fresh.firestore().doc('users/x').set({ tenantId: HUB, roles: ['worker'] }));
+    await assert.rejects(fresh.firestore().doc('persons/x').set({ tenantId: HUB }));
+  });
+
+  it('authenticated users with claims CANNOT create their own users/persons docs', async () => {
+    // Persons/users docs come only from the server (ensureMyPerson).
+    // Even the owner, even with a claim tenant, cannot client-create.
+    await assert.rejects(
+      worker1().firestore().doc('persons/worker-1').set({
+        displayName: 'W1', email: 'w1@example.test', tenantId: HUB,
+      }),
+    );
+    await assert.rejects(
+      worker1().firestore().doc('users/worker-1').set({
+        displayName: 'W1', email: 'w1@example.test', tenantId: HUB, roles: ['worker'],
+      }),
+    );
   });
 });
 
@@ -620,19 +632,20 @@ describe('supervision sessions (Phase 2)', () => {
   });
 });
 
-describe('persons creation (Phase 2)', () => {
-  it('owner with claims creates their own persons doc in their tenant', async () => {
-    const ref = worker1().firestore().doc('persons/worker-1');
-    await ref.set({ displayName: 'W1', email: 'w1@example.test', tenantId: HUB });
-    const snap = await ref.get();
-    assert.equal(snap.exists, true);
+describe('persons creation (production onboarding)', () => {
+  it('owner with claims CANNOT create their own persons doc (server-only)', async () => {
+    await assert.rejects(
+      worker1().firestore().doc('persons/worker-1').set({
+        displayName: 'W1', email: 'w1@example.test', tenantId: HUB,
+      }),
+    );
   });
 
   it('claim-less users CANNOT create a persons doc directly (the server callable is the only path)', async () => {
     const noClaims = testEnv.authenticatedContext('noclaims-person', {});
     await assert.rejects(
       noClaims.firestore().doc('persons/noclaims-person').set({
-        displayName: 'N', email: 'n@example.test', tenantId: 'demo-hub',
+        displayName: 'N', email: 'n@example.test', tenantId: HUB,
       }),
     );
   });
@@ -646,8 +659,14 @@ describe('persons creation (Phase 2)', () => {
   });
 
   it('owner cannot change their persons tenantId', async () => {
+    // Seed the doc via the rules-disabled context (server path), then
+    // verify the owner cannot move it to another tenant.
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc('persons/worker-1').set({
+        displayName: 'W1', email: 'w1@example.test', tenantId: HUB,
+      });
+    });
     const ref = worker1().firestore().doc('persons/worker-1');
-    await ref.set({ displayName: 'W1', email: 'w1@example.test', tenantId: HUB });
     await assert.rejects(ref.update({ tenantId: OTHER_HUB }));
   });
 });

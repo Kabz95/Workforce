@@ -39,9 +39,11 @@ firebase emulators:start
 VITE_USE_EMULATORS=true npm run dev
 ```
 
-With emulators, new users default to role `worker` and tenant `demo-hub`
-(because custom claims do not exist yet). In a real project, roles and
-`tenantId` come from Auth custom claims set by a trusted admin / Function.
+With emulators, accounts are created by invitation (see the repo
+README): seed a pending invitation, then sign up with that email —
+`ensureMyPerson` claims it on first sign-in. Roles and `tenantId`
+come from the claimed grants; an account with no live grant has no
+access.
 
 ## What is built
 

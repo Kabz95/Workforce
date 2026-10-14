@@ -84,21 +84,18 @@ service cloud.firestore {
     }
 
     // ---- Users (profile docs) ----
-    // Clients may change displayName/email only — never roles/tenantId.
-    // Create: the self-signup bootstrap allows a claim-less user to
-    // create their own doc in demo-hub with the worker role only; once
-    // claims exist, the claim tenant governs. No other collection
-    // admits claim-less writes.
+    // Production onboarding: accounts come from invitations. Clients
+    // NEVER create users docs — there is no claim-less self-signup
+    // bootstrap and no demo tenant. The server (ensureMyPerson)
+    // creates persons docs; users/ is retained for owner read/update
+    // of pre-existing docs only. Clients may change displayName/email
+    // only — never roles/tenantId.
     match /users/{userId} {
       allow get: if signedIn()
         && (uid() == userId
           || (isHubCoordinator() && storedTenantMatches(resource.data)));
       allow list: if false;
-      allow create: if signedIn() && uid() == userId
-        && request.resource.data.roles == ['worker']
-        && (incomingTenantMatches(request.resource.data)
-          || (claimTenant() == null
-            && request.resource.data.tenantId == 'demo-hub'));
+      allow create: if false;
       allow update: if signedIn() && uid() == userId
         && storedTenantMatches(resource.data)
         && immutableCoreUnchanged()
@@ -108,13 +105,14 @@ service cloud.firestore {
     }
 
     // ---- Persons (one per account) ----
+    // Server-created only (ensureMyPerson): client creation is denied,
+    // including for the owner. Owner read/update of their own doc.
     match /persons/{personId} {
       allow get: if signedIn()
         && (uid() == personId
           || (canAuthorise() && storedTenantMatches(resource.data)));
       allow list: if false;
-      allow create: if signedIn() && uid() == personId
-        && incomingTenantMatches(request.resource.data);
+      allow create: if false;
       allow update: if signedIn() && uid() == personId
         && storedTenantMatches(resource.data)
         && request.resource.data.tenantId == resource.data.tenantId
