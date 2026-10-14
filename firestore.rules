@@ -28,8 +28,8 @@ service cloud.firestore {
 
     function signedIn() { return request.auth != null; }
     function uid() { return request.auth.uid; }
-    function claimTenant() { return request.auth.token.tenantId; }
-    function claimRoles() { return request.auth.token.roles; }
+    function claimTenant() { return request.auth.token.get('tenantId', null); }
+    function claimRoles() { return request.auth.token.get('roles', null); }
     function hasRole(role) {
       return signedIn() && claimRoles() != null && role in claimRoles();
     }
