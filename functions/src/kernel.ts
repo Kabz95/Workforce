@@ -450,6 +450,280 @@ export function mayAuthorizeGrant(
 }
 
 // ---------------------------------------------------------------------------
+// Purpose taxonomy (Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * The central purpose vocabulary. Every consequential command carries a
+ * purpose, and the purpose MUST be one of these strings — free-text
+ * purposes are rejected by authorizeCommand. The taxonomy is the
+ * complete list of purposes the system itself uses (handler defaults)
+ * plus the worker-facing purposes the Consents / Handoffs UI offers.
+ * Every entry is a plain-language phrase a worker can read in their
+ * audit log and understand.
+ *
+ * If you add a purpose here, add it to the UI dropdowns that offer it
+ * (web/src/lib/types.ts PURPOSE_TAXONOMY mirror). If you remove one,
+ * update every handler default that uses it — the kernel tests pin
+ * the full list.
+ */
+export const PURPOSE_TAXONOMY: readonly string[] = [
+  // Worker-facing purposes (Consents / Handoffs UI).
+  'wayfinding support',
+  'peer mentorship',
+  'supervision reflection',
+  'certification navigation',
+  'pathway review',
+  'handoff coordination',
+  // Handler defaults (system purposes).
+  'share a record',
+  'export my data',
+  'delete my data',
+  'consent expiry',
+  'consent revocation',
+  'grant a role',
+  'resolve a proposed grant',
+  'revoke a role grant',
+  'declare a conflict',
+  'request a role grant',
+  'respond to a handoff',
+  'person record setup',
+];
+
+/** True when the purpose is one of the taxonomy's canonical phrases. */
+export function isValidPurpose(purpose: unknown): purpose is string {
+  return typeof purpose === 'string' && PURPOSE_TAXONOMY.includes(purpose);
+}
+
+// ---------------------------------------------------------------------------
+// Central role → command matrix (Phase 2)
+// ---------------------------------------------------------------------------
+
+/** Roles that may send a handoff (offer). The recipient is verified separately. */
+export const HANDOFF_SENDERS: readonly AnyRole[] = [
+  'navigator',
+  'hubCoordinator',
+  'supervisor',
+  'mentor',
+];
+
+export type CommandName =
+  | 'grantAccess'
+  | 'requestExport'
+  | 'requestDeletion'
+  | 'processDeletion'
+  | 'createHandoff'
+  | 'respondHandoff'
+  | 'closeHandoff'
+  | 'createRoleGrant'
+  | 'resolveRoleGrant'
+  | 'revokeRoleGrant'
+  | 'requestRoleGrant'
+  | 'declareConflict'
+  | 'ensureMyPerson'
+  | 'getMyGrants';
+
+export interface CommandMatrixEntry {
+  /**
+   * Roles that may issue this command. 'any' = any authenticated person
+   * (self-service); the handler verifies the caller is the subject (or
+   * the handoff recipient) — the matrix does not grant cross-person access.
+   */
+  roles: readonly AnyRole[] | 'any';
+  highRisk: boolean;
+  /** What the handler verifies beyond the matrix. */
+  note: string;
+}
+
+/**
+ * The single role → command matrix. HANDOFF_SENDERS and GRANT_AUTHORITIES
+ * are the canonical lists this matrix references — there is no second
+ * copy of them anywhere (gateway.ts imports HANDOFF_SENDERS from here).
+ */
+export const COMMAND_MATRIX: Readonly<Record<CommandName, CommandMatrixEntry>> = {
+  grantAccess: {
+    roles: ['worker'],
+    highRisk: true,
+    note: 'Caller must own the target document (or be a participant); a live consent with matching scope is required.',
+  },
+  requestExport: {
+    roles: ['worker'],
+    highRisk: true,
+    note: 'Own data only.',
+  },
+  requestDeletion: {
+    roles: ['worker'],
+    highRisk: true,
+    note: 'Own data only; creates a resumable deletion job.',
+  },
+  processDeletion: {
+    roles: ['worker'],
+    highRisk: true,
+    note: 'Job owner only; the scheduled sweeper runs as system.',
+  },
+  createHandoff: {
+    roles: HANDOFF_SENDERS,
+    highRisk: false,
+    note: 'Sender must hold one of these grants; a live assignment must link the sender to the worker (unless hubCoordinator); the recipient must hold a live grant for the recipient role.',
+  },
+  respondHandoff: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Only the recipient; verified against a live grant for the recipient role in the handoff scope.',
+  },
+  closeHandoff: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Only the recipient; from offered or accepted.',
+  },
+  createRoleGrant: {
+    roles: GRANT_AUTHORITIES,
+    highRisk: true,
+    note: 'Hub authorities act only within their tenant; council/backboneLead act network-wide.',
+  },
+  resolveRoleGrant: {
+    roles: GRANT_AUTHORITIES,
+    highRisk: true,
+    note: 'Grants flagged for review may only be resolved by council.',
+  },
+  revokeRoleGrant: {
+    roles: GRANT_AUTHORITIES,
+    highRisk: true,
+    note: 'Or self-relinquish: the subject revoking their own grant.',
+  },
+  requestRoleGrant: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Self-request; creates a proposed grant. systemAdmin cannot be self-requested (the handler denies it).',
+  },
+  declareConflict: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Own declaration.',
+  },
+  ensureMyPerson: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Bootstrap: creates the caller’s own persons doc exactly once. No live grant required (it runs before grants exist).',
+  },
+  getMyGrants: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Own grants only.',
+  },
+};
+
+/** True when `role` may issue `command` per the central matrix. */
+export function commandAllowsRole(command: CommandName, role: AnyRole): boolean {
+  const entry = COMMAND_MATRIX[command];
+  if (!entry) return false;
+  if (entry.roles === 'any') return true;
+  return entry.roles.includes(role);
+}
+
+// ---------------------------------------------------------------------------
+// Deletion plan (Phase 2) — data-driven, resumable deletion
+// ---------------------------------------------------------------------------
+
+export type DeletionMatch =
+  | 'ownerId'
+  | 'participantIds'
+  | 'supervisorId'
+  | 'authorId'
+  | 'complainantId'
+  | 'workerId'
+  | 'holderId'
+  | 'personId'
+  | 'granteeId'
+  | 'granterId'
+  | 'senderId'
+  | 'recipientId'
+  | 'sharedWith'
+  | 'docId';
+
+export type DeletionAction =
+  | 'delete'
+  | 'anonymiseField'
+  | 'stripUid'
+  | 'revokeGrant'
+  | 'closeLink'
+  | 'revokeConsent';
+
+export interface DeletionPlanStep {
+  collection: string;
+  /** How to find the caller’s documents in this collection. */
+  match: DeletionMatch;
+  action: DeletionAction;
+  /** Field(s) the action operates on (anonymiseField / closeLink / stripUid). */
+  fields?: readonly string[];
+  /** Extra update applied with the action (e.g. closeLink sets status closed). */
+  extra?: Readonly<Record<string, string>>;
+  /**
+   * For revokeConsent: which uid to strip from the consent target’s
+   * sharedWith — the consent’s granteeId (granter-side) or the caller
+   * (grantee-side).
+   */
+  stripTargetSharedWith?: 'granteeId' | 'caller';
+}
+
+/**
+ * The deletion plan: every collection that holds user-linked data, and
+ * what happens to it when that person deletes their data. The runner
+ * (index.ts) walks this table step by step, in order, resuming from a
+ * cursor — so a large account never hits the single-transaction limit.
+ *
+ * Coverage rules (pinned by kernel tests):
+ * - Every WORKER_OWNED collection (ownerId) is deleted.
+ * - Every shareable collection gets a sharedWith sweep (stale shares removed).
+ * - supervisionSessions is anonymised on BOTH sides: supervisorId (the
+ *   supervisor leaving) AND ownerId (the worker leaving — Phase 2 fix:
+ *   Phase 1 only tombstoned supervisorId, leaving the worker’s link).
+ * - handoffs are anonymised for all three parties (worker, sender, recipient).
+ * - Access events, aggregates, governance decisions and the deletion job
+ *   itself are KEPT (accountability / published records) — they are
+ *   deliberately absent from this table.
+ */
+export const DELETION_PLAN: readonly DeletionPlanStep[] = [
+  // 1. Worker-owned documents: deleted.
+  { collection: 'workers', match: 'ownerId', action: 'delete' },
+  { collection: 'firstContactForms', match: 'ownerId', action: 'delete' },
+  { collection: 'pathwaySteps', match: 'ownerId', action: 'delete' },
+  { collection: 'certificationNavigation', match: 'ownerId', action: 'delete' },
+  { collection: 'evaluationSubmissions', match: 'ownerId', action: 'delete' },
+  { collection: 'opportunityApplications', match: 'ownerId', action: 'delete' },
+  // 2. Mentorships: the person leaves the participant list (record persists, anonymised).
+  { collection: 'mentorships', match: 'participantIds', action: 'stripUid', fields: ['participantIds', 'sharedWith'] },
+  // 3. Supervision sessions: anonymised on both sides.
+  { collection: 'supervisionSessions', match: 'supervisorId', action: 'anonymiseField', fields: ['supervisorId'] },
+  { collection: 'supervisionSessions', match: 'ownerId', action: 'anonymiseField', fields: ['ownerId'] },
+  // 4. Authored / filed records: author identity anonymised.
+  { collection: 'adaptationLogs', match: 'authorId', action: 'anonymiseField', fields: ['authorId'] },
+  { collection: 'complaints', match: 'complainantId', action: 'anonymiseField', fields: ['complainantId'] },
+  // 5. Assignments: both sides closed.
+  { collection: 'assignments', match: 'workerId', action: 'closeLink', fields: ['workerId'], extra: { status: 'closed' } },
+  { collection: 'assignments', match: 'holderId', action: 'closeLink', fields: ['holderId'], extra: { status: 'closed' } },
+  // 6. Handoffs: all three parties anonymised (worker side also closes the handoff).
+  { collection: 'handoffs', match: 'workerId', action: 'closeLink', fields: ['workerId'], extra: { status: 'closed' } },
+  { collection: 'handoffs', match: 'senderId', action: 'anonymiseField', fields: ['senderId'] },
+  { collection: 'handoffs', match: 'recipientId', action: 'anonymiseField', fields: ['recipientId'] },
+  // 7. sharedWith sweep: remove the person from every shareable document they were granted.
+  { collection: 'firstContactForms', match: 'sharedWith', action: 'stripUid', fields: ['sharedWith'] },
+  { collection: 'pathwaySteps', match: 'sharedWith', action: 'stripUid', fields: ['sharedWith'] },
+  { collection: 'certificationNavigation', match: 'sharedWith', action: 'stripUid', fields: ['sharedWith'] },
+  { collection: 'supervisionSessions', match: 'sharedWith', action: 'stripUid', fields: ['sharedWith'] },
+  // 8. Consent grants: revoked (both directions), and the other party’s access stripped from the target.
+  { collection: 'consents', match: 'granterId', action: 'revokeConsent', stripTargetSharedWith: 'granteeId' },
+  { collection: 'consents', match: 'granteeId', action: 'revokeConsent', stripTargetSharedWith: 'caller' },
+  // 9. Memberships + profile docs: deleted (the person leaves).
+  { collection: 'memberships', match: 'personId', action: 'delete' },
+  { collection: 'persons', match: 'docId', action: 'delete' },
+  { collection: 'users', match: 'docId', action: 'delete' },
+  // 10. Role grants: revoked, not deleted (accountability record).
+  { collection: 'roleGrants', match: 'granteeId', action: 'revokeGrant' },
+];
+
+
+// ---------------------------------------------------------------------------
 // Six-part authorization
 // ---------------------------------------------------------------------------
 
@@ -586,10 +860,14 @@ export function authorizeCommand(input: PolicyInput, nowMs: number = Date.now())
   }
   checks.relationship = true;
 
-  // 5. Purpose. Must be stated (non-empty). A purpose taxonomy is a
-  // Phase-2 refinement; Phase 1 enforces presence, not vocabulary.
+  // 5. Purpose. Must be stated AND in the central taxonomy (Phase 2).
+  // Free-text purposes are rejected: the audit trail stays legible and
+  // every purpose is a reviewed, worker-readable phrase.
   if (typeof input.purpose !== 'string' || input.purpose.trim().length === 0) {
     return deny('purpose-missing: a stated purpose is required.');
+  }
+  if (!isValidPurpose(input.purpose)) {
+    return deny(`purpose-not-in-taxonomy: "${input.purpose}" is not a recognised purpose.`);
   }
   checks.purpose = true;
 

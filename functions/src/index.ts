@@ -20,7 +20,7 @@
  */
 
 import { initializeApp } from 'firebase-admin/app';
-import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue, FieldPath, Timestamp } from 'firebase-admin/firestore';
 import { getStorage } from 'firebase-admin/storage';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
@@ -36,8 +36,10 @@ const storage = getStorage();
 import {
   authorizeCommand,
   buildAccessEvent,
+  DELETION_PLAN,
   deriveConsentScope,
   isValidIdempotencyKey,
+  type DeletionPlanStep,
 } from './kernel';
 import {
   callerFrom,
@@ -56,6 +58,8 @@ export {
   declareConflictFn as declareConflict,
   createHandoffFn as createHandoff,
   respondHandoffFn as respondHandoff,
+  closeHandoffFn as closeHandoff,
+  ensureMyPersonFn as ensureMyPerson,
 } from './gateway';
 
 // Collections whose documents are owned by a worker (ownerId) and
@@ -287,6 +291,47 @@ export const grantAccess = onCall(async (request) => {
 });
 
 /**
+ * Build the export bundle for one person: every document they own,
+ * consent grants they gave or received, and their own grants,
+ * memberships, assignments, and handoffs (portability covers shared
+ * relationships, not just owned docs). Shared by requestExport and the
+ * deletion job's pre-deletion export step.
+ */
+async function buildExportBundle(uid: string): Promise<Record<string, unknown[]>> {
+  const bundle: Record<string, unknown[]> = {};
+  for (const coll of WORKER_OWNED) {
+    const snap = await db.collection(coll).where('ownerId', '==', uid).get();
+    bundle[coll] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+  }
+  // Consent grants the worker gave or received.
+  const granted = await db.collection('consents').where('granterId', '==', uid).get();
+  const received = await db.collection('consents').where('granteeId', '==', uid).get();
+  bundle['consents'] = [
+    ...granted.docs.map((d) => ({ id: d.id, ...d.data() })),
+    ...received.docs.map((d) => ({ id: d.id, ...d.data() })),
+  ];
+  // Own role grants, memberships, assignments, handoffs (as a party).
+  const roleGrants = await db.collection('roleGrants').where('granteeId', '==', uid).get();
+  bundle['roleGrants'] = roleGrants.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const memberships = await db.collection('memberships').where('personId', '==', uid).get();
+  bundle['memberships'] = memberships.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const assignments = await db
+    .collection('assignments')
+    .where('workerId', '==', uid)
+    .get();
+  const heldAssignments = await db
+    .collection('assignments')
+    .where('holderId', '==', uid)
+    .get();
+  bundle['assignments'] = [
+    ...assignments.docs.map((d) => ({ id: d.id, ...d.data() })),
+    ...heldAssignments.docs.map((d) => ({ id: d.id, ...d.data() })),
+  ];
+  const handoffs = await db.collection('handoffs').where('workerId', '==', uid).get();
+  bundle['handoffs'] = handoffs.docs.map((d) => ({ id: d.id, ...d.data() }));
+  return bundle;
+}
+/**
  * requestExport — bundle every document the caller owns, return a
  * signed download URL valid 7 days. Callable by the worker.
  * Includes the worker's own grants, memberships, assignments, and
@@ -323,37 +368,7 @@ export const requestExport = onCall(async (request) => {
   if (!decision.allowed) {
     throw new HttpsError('permission-denied', decision.reason);
   }
-  const bundle: Record<string, unknown[]> = {};
-  for (const coll of WORKER_OWNED) {
-    const snap = await db.collection(coll).where('ownerId', '==', uid).get();
-    bundle[coll] = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  }
-  // Consent grants the worker gave or received.
-  const granted = await db.collection('consents').where('granterId', '==', uid).get();
-  const received = await db.collection('consents').where('granteeId', '==', uid).get();
-  bundle['consents'] = [
-    ...granted.docs.map((d) => ({ id: d.id, ...d.data() })),
-    ...received.docs.map((d) => ({ id: d.id, ...d.data() })),
-  ];
-  // Own role grants, memberships, assignments, handoffs (as a party).
-  const roleGrants = await db.collection('roleGrants').where('granteeId', '==', uid).get();
-  bundle['roleGrants'] = roleGrants.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const memberships = await db.collection('memberships').where('personId', '==', uid).get();
-  bundle['memberships'] = memberships.docs.map((d) => ({ id: d.id, ...d.data() }));
-  const assignments = await db
-    .collection('assignments')
-    .where('workerId', '==', uid)
-    .get();
-  const heldAssignments = await db
-    .collection('assignments')
-    .where('holderId', '==', uid)
-    .get();
-  bundle['assignments'] = [
-    ...assignments.docs.map((d) => ({ id: d.id, ...d.data() })),
-    ...heldAssignments.docs.map((d) => ({ id: d.id, ...d.data() })),
-  ];
-  const handoffs = await db.collection('handoffs').where('workerId', '==', uid).get();
-  bundle['handoffs'] = handoffs.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const bundle = await buildExportBundle(uid);
   const payload = JSON.stringify(
     { exportedAt: new Date().toISOString(), ownerId: uid, data: bundle },
     null,
@@ -388,18 +403,281 @@ export const requestExport = onCall(async (request) => {
 });
 
 /**
- * requestDeletion — delete owned documents; anonymise shared ones.
- * Audit / access-event records are kept as the system's accountability
- * record. Callable by the worker. Idempotent: repeating the same
- * idempotency key returns the stored result without re-processing.
- * NOTE (500-op limit): very large accounts may exceed one transaction;
- * the resumable job-based deletion is a Phase 2 refinement.
+ * Deletion jobs (Phase 2) — resumable, job-based deletion.
+ *
+ * requestDeletion creates a deletionRequests job (status 'queued') and
+ * returns its id. processDeletion advances the job one bounded pass
+ * (the export step once, then one batch of deletion-plan steps). The
+ * client calls processDeletion until the job is 'done'; the hourly
+ * sweeper (processDeletionQueue) finishes jobs whose client
+ * disconnected. A second requestDeletion while a job is unfinished
+ * returns the existing job (resume), never a duplicate.
+ *
+ * Each pass is a single Firestore batch (≤ ~200 writes) + one job-doc
+ * update, so a large account never hits the 500-op transaction limit.
+ * The job carries a cursor { stepIndex, lastDocId } — an interrupted
+ * pass resumes from the cursor; re-running a pass never double-applies
+ * (each document is visited once, by cursor). A soft lease (a fresh
+ * 'running' job) stops two passes colliding.
+ */
+
+const DELETION_TOMBSTONE = 'anonymised';
+/** Max documents processed in one pass (keeps the batch well under 500 ops). */
+const DELETION_BATCH_DOCS = 100;
+/** A 'running' job newer than this is treated as a pass in progress. */
+const DELETION_LEASE_MS = 5 * 60 * 1000;
+
+interface DeletionJobData {
+  ownerId: string;
+  tenantId: string | null;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  stepIndex: number;
+  lastDocId: string | null;
+  processed: number;
+  deleted: number;
+  anonymised: number;
+  exportUrl: string | null;
+  exportError: string | null;
+  error: string | null;
+  updatedAt?: Timestamp;
+}
+
+function deletionJobFrom(data: FirebaseFirestore.DocumentData): DeletionJobData {
+  return {
+    ownerId: data.ownerId as string,
+    tenantId: (data.tenantId as string | null) ?? null,
+    status: data.status as DeletionJobData['status'],
+    stepIndex: (data.stepIndex as number) ?? 0,
+    lastDocId: (data.lastDocId as string | null) ?? null,
+    processed: (data.processed as number) ?? 0,
+    deleted: (data.deleted as number) ?? 0,
+    anonymised: (data.anonymised as number) ?? 0,
+    exportUrl: (data.exportUrl as string | null) ?? null,
+    exportError: (data.exportError as string | null) ?? null,
+    error: (data.error as string | null) ?? null,
+    updatedAt: data.updatedAt as Timestamp | undefined,
+  };
+}
+
+/** Fetch one page of documents for a deletion-plan step, after the cursor. */
+async function fetchStepDocs(
+  step: DeletionPlanStep,
+  uid: string,
+  lastDocId: string | null,
+  limit: number,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const coll = db.collection(step.collection);
+  if (step.match === 'docId') {
+    // Single doc (persons/{uid}, users/{uid}): visited once, then the
+    // cursor moves past it — a non-null cursor means it was done.
+    if (lastDocId !== null) return [];
+    const snap = await coll.doc(uid).get();
+    return snap.exists ? [snap as unknown as FirebaseFirestore.QueryDocumentSnapshot] : [];
+  }
+  let q: FirebaseFirestore.Query = coll;
+  if (step.match === 'participantIds' || step.match === 'sharedWith') {
+    q = q.where(step.match, 'array-contains', uid);
+  } else {
+    q = q.where(step.match, '==', uid);
+  }
+  if (step.action === 'revokeConsent') {
+    q = q.where('revokedAt', '==', null);
+  }
+  q = q.orderBy(FieldPath.documentId());
+  if (lastDocId !== null) q = q.startAfter(lastDocId);
+  const snap = await q.limit(limit).get();
+  return snap.docs;
+}
+
+/**
+ * Apply one deletion-plan step to one document, inside the pass batch.
+ * revokeConsent also strips the other party from the target's
+ * sharedWith (the target is read first; a missing target is skipped,
+ * never fails the pass).
+ */
+async function applyDeletionStep(
+  batch: FirebaseFirestore.WriteBatch,
+  step: DeletionPlanStep,
+  docSnap: FirebaseFirestore.QueryDocumentSnapshot,
+  uid: string,
+): Promise<void> {
+  const ref = docSnap.ref;
+  const stamp = { updatedAt: FieldValue.serverTimestamp() };
+  switch (step.action) {
+    case 'delete':
+      batch.delete(ref);
+      return;
+    case 'anonymiseField': {
+      const update: Record<string, unknown> = { ...stamp };
+      for (const f of step.fields ?? []) update[f] = DELETION_TOMBSTONE;
+      batch.update(ref, update);
+      return;
+    }
+    case 'closeLink': {
+      const update: Record<string, unknown> = { ...stamp, ...(step.extra ?? {}) };
+      for (const f of step.fields ?? []) update[f] = DELETION_TOMBSTONE;
+      batch.update(ref, update);
+      return;
+    }
+    case 'stripUid': {
+      const update: Record<string, unknown> = { ...stamp };
+      for (const f of step.fields ?? []) update[f] = FieldValue.arrayRemove(uid);
+      batch.update(ref, update);
+      return;
+    }
+    case 'revokeGrant':
+      batch.update(ref, {
+        status: 'revoked',
+        reviewReason: 'account-deletion',
+        ...stamp,
+      });
+      return;
+    case 'revokeConsent': {
+      batch.update(ref, {
+        revokedAt: FieldValue.serverTimestamp(),
+        revokeReason: 'account-deletion',
+      });
+      const consent = docSnap.data() as ConsentGrant;
+      const stripUid =
+        step.stripTargetSharedWith === 'granteeId' ? consent.granteeId : uid;
+      const target = db.collection(consent.resourceType).doc(consent.resourceId);
+      const targetSnap = await target.get();
+      if (targetSnap.exists) {
+        batch.update(target, {
+          sharedWith: FieldValue.arrayRemove(stripUid),
+          updatedAt: FieldValue.serverTimestamp(),
+        });
+      }
+      return;
+    }
+    default:
+      return;
+  }
+}
+
+/**
+ * Run one bounded deletion pass for a job: the export step (once),
+ * then deletion-plan steps from the cursor until the doc budget is
+ * spent. Updates the job doc (progress + cursor) in the same batch as
+ * the deletions; on completion, writes the accountability access event.
+ */
+async function runDeletionPass(
+  jobRef: FirebaseFirestore.DocumentReference,
+  job: DeletionJobData,
+): Promise<{ status: string; processed: number; deleted: number; anonymised: number; exportUrl: string | null; exportError: string | null }> {
+  const uid = job.ownerId;
+
+  // 1. Export step (once). Best-effort: deletion is the critical path.
+  // The worker is told to export first; a failed auto-export is
+  // recorded on the job, never blocks deletion.
+  if (job.exportUrl === null && job.exportError === null) {
+    try {
+      const bundle = await buildExportBundle(uid);
+      const payload = JSON.stringify(
+        { exportedAt: new Date().toISOString(), ownerId: uid, data: bundle },
+        null,
+        2,
+      );
+      const file = storage
+        .bucket()
+        .file(`exports/${uid}/export-${Date.now()}.json`);
+      await file.save(payload, { contentType: 'application/json' });
+      const [url] = await file.getSignedUrl({
+        action: 'read',
+        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+      });
+      job.exportUrl = url;
+      await jobRef.update({ exportUrl: url, updatedAt: FieldValue.serverTimestamp() });
+    } catch (err) {
+      job.exportError = err instanceof Error ? err.message : 'export failed';
+      await jobRef.update({ exportError: job.exportError, updatedAt: FieldValue.serverTimestamp() });
+    }
+  }
+
+  // 2. Deletion steps from the cursor, within the doc budget.
+  let { stepIndex, lastDocId, processed, deleted, anonymised } = job;
+  const batch = db.batch();
+  let docsInPass = 0;
+  while (stepIndex < DELETION_PLAN.length && docsInPass < DELETION_BATCH_DOCS) {
+    const step = DELETION_PLAN[stepIndex];
+    const remaining = DELETION_BATCH_DOCS - docsInPass;
+    const docs = await fetchStepDocs(step, uid, lastDocId, remaining);
+    if (docs.length === 0) {
+      stepIndex += 1;
+      lastDocId = null;
+      continue;
+    }
+    for (const docSnap of docs) {
+      await applyDeletionStep(batch, step, docSnap, uid);
+      lastDocId = docSnap.id;
+      if (step.action === 'delete') deleted += 1;
+      else anonymised += 1;
+    }
+    processed += docs.length;
+    docsInPass += docs.length;
+    if (docs.length < remaining) {
+      // Step exhausted — advance to the next step in this same pass.
+      stepIndex += 1;
+      lastDocId = null;
+    }
+    // A full page means the budget is spent; the loop exits and the
+    // next pass resumes this step from the cursor.
+  }
+  const done = stepIndex >= DELETION_PLAN.length;
+
+  // 3. Job update (+ accountability event on completion) in the same batch.
+  batch.update(jobRef, {
+    status: done ? 'done' : 'running',
+    stepIndex,
+    lastDocId,
+    processed,
+    deleted,
+    anonymised,
+    updatedAt: FieldValue.serverTimestamp(),
+    ...(done ? { completedAt: FieldValue.serverTimestamp() } : {}),
+  });
+  if (done) {
+    const eventRef = db.collection(ACCESS_EVENTS).doc();
+    batch.set(
+      eventRef,
+      buildAccessEvent(
+        {
+          subjectId: uid,
+          actorId: uid,
+          action: 'requestDeletion',
+          resourceType: 'account',
+          resourceId: uid,
+          actingRole: 'worker',
+          actingGrantId: null,
+          purpose: 'delete my data',
+          correlationId: jobRef.id,
+          result: 'allowed',
+        },
+        FieldValue.serverTimestamp(),
+      ),
+    );
+  }
+  await batch.commit();
+  return {
+    status: done ? 'done' : 'running',
+    processed,
+    deleted,
+    anonymised,
+    exportUrl: job.exportUrl,
+    exportError: job.exportError,
+  };
+}
+
+/**
+ * requestDeletion — create a resumable deletion job. Callable by the
+ * worker. The job (not a single transaction) does the work, so a large
+ * account never hits the 500-op limit. Audit / access-event records
+ * are kept as the system's accountability record.
  */
 export const requestDeletion = onCall(async (request) => {
   const caller = callerFrom(request);
   const data = (request.data ?? {}) as ActingInput;
   const uid = caller.uid;
-  const corr = correlationId(data.idempotencyKey, `requestDeletion:${uid}`);
   const ctx = await resolveCommandContext(
     caller,
     { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? 'demo-hub' },
@@ -424,140 +702,134 @@ export const requestDeletion = onCall(async (request) => {
   if (!decision.allowed) {
     throw new HttpsError('permission-denied', decision.reason);
   }
-  const TOMBSTONE = 'anonymised';
-  const result = await db.runTransaction(async (tx) => {
-    const idem = await checkIdempotencyInTx(tx, corr, 'requestDeletion');
-    if (idem.seen) return idem.result as { ok: boolean };
-
-    // 1. Delete worker-owned documents.
-    for (const coll of WORKER_OWNED) {
-      const snap = await tx.get(db.collection(coll).where('ownerId', '==', uid));
-      for (const docSnap of snap.docs) tx.delete(docSnap.ref);
-    }
-    // 2. Anonymise shared documents the worker participated in.
-    const mentorships = await tx.get(
-      db.collection('mentorships').where('participantIds', 'array-contains', uid),
-    );
-    for (const docSnap of mentorships.docs) {
-      tx.update(docSnap.ref, {
-        participantIds: FieldValue.arrayRemove(uid),
-        sharedWith: FieldValue.arrayRemove(uid),
-      });
-    }
-    const supervised = await tx.get(
-      db.collection('supervisionSessions').where('supervisorId', '==', uid),
-    );
-    for (const docSnap of supervised.docs) {
-      tx.update(docSnap.ref, { supervisorId: TOMBSTONE });
-    }
-    const authored = await tx.get(
-      db.collection('adaptationLogs').where('authorId', '==', uid),
-    );
-    for (const docSnap of authored.docs) {
-      tx.update(docSnap.ref, { authorId: TOMBSTONE });
-    }
-    const complaints = await tx.get(
-      db.collection('complaints').where('complainantId', '==', uid),
-    );
-    for (const docSnap of complaints.docs) {
-      tx.update(docSnap.ref, { complainantId: TOMBSTONE });
-    }
-    // Assignments: remove the worker from both sides.
-    const asWorker = await tx.get(
-      db.collection('assignments').where('workerId', '==', uid),
-    );
-    for (const docSnap of asWorker.docs) {
-      tx.update(docSnap.ref, { workerId: TOMBSTONE, status: 'closed' });
-    }
-    const asHolder = await tx.get(
-      db.collection('assignments').where('holderId', '==', uid),
-    );
-    for (const docSnap of asHolder.docs) {
-      tx.update(docSnap.ref, { holderId: TOMBSTONE, status: 'closed' });
-    }
-    // Handoffs: anonymise the worker as a party.
-    const handoffs = await tx.get(
-      db.collection('handoffs').where('workerId', '==', uid),
-    );
-    for (const docSnap of handoffs.docs) {
-      tx.update(docSnap.ref, { workerId: TOMBSTONE, status: 'closed' });
-    }
-    // Memberships + person profile: deleted (the person leaves).
-    const memberships = await tx.get(
-      db.collection('memberships').where('personId', '==', uid),
-    );
-    for (const docSnap of memberships.docs) tx.delete(docSnap.ref);
-    tx.delete(db.collection('persons').doc(uid));
-    // Role grants: revoked, not deleted (accountability record).
-    const grants = await tx.get(
-      db.collection('roleGrants').where('granteeId', '==', uid),
-    );
-    for (const docSnap of grants.docs) {
-      tx.update(docSnap.ref, {
-        status: 'revoked',
-        reviewReason: 'account-deletion',
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-    }
-    // 3. Close the worker's consent grants (revoke) and strip access.
-    const stripSharedWithInTx = async (collection: string, docId: string, uidToRemove: string) => {
-      const ref = db.collection(collection).doc(docId);
-      const snap = await tx.get(ref);
-      if (!snap.exists) return;
-      tx.update(ref, {
-        sharedWith: FieldValue.arrayRemove(uidToRemove),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-    };
-    const grantsOut = await tx.get(
-      db.collection('consents').where('granterId', '==', uid).where('revokedAt', '==', null),
-    );
-    for (const docSnap of grantsOut.docs) {
-      const g = docSnap.data() as ConsentGrant;
-      tx.update(docSnap.ref, {
-        revokedAt: FieldValue.serverTimestamp(),
-        revokeReason: 'account-deletion',
-      });
-      await stripSharedWithInTx(g.resourceType, g.resourceId, g.granteeId);
-    }
-    const grantsIn = await tx.get(
-      db.collection('consents').where('granteeId', '==', uid).where('revokedAt', '==', null),
-    );
-    for (const docSnap of grantsIn.docs) {
-      const g = docSnap.data() as ConsentGrant;
-      tx.update(docSnap.ref, {
-        revokedAt: FieldValue.serverTimestamp(),
-        revokeReason: 'account-deletion',
-      });
-      await stripSharedWithInTx(g.resourceType, g.resourceId, uid);
-    }
-    // 4. Record the deletion request as processed.
-    const reqRef = db.collection('deletionRequests').doc();
-    tx.set(reqRef, {
-      ownerId: uid,
-      tenantId: caller.claimsTenantId ?? null,
-      status: 'processed',
-      createdAt: FieldValue.serverTimestamp(),
-    });
-    // 5. Access event (accountability record, kept) + idempotency mark.
-    writeAccessEventInTx(tx, {
-      subjectId: uid,
-      actorId: uid,
-      action: 'requestDeletion',
-      resourceType: 'account',
-      resourceId: uid,
-      actingRole: ctx.actingGrant?.role ?? 'worker (claims fallback)',
-      actingGrantId: ctx.actingGrant?.id ?? null,
-      purpose: data.purpose ?? 'delete my data',
-      correlationId: corr,
-      result: 'allowed',
-      migrationFallback: ctx.migrationFallback,
-    });
-    markIdempotencyDoneInTx(tx, corr, 'requestDeletion', { ok: true });
-    return { ok: true };
+  // Resume: an unfinished job for this uid is returned, never duplicated.
+  const existing = await db
+    .collection('deletionRequests')
+    .where('ownerId', '==', uid)
+    .where('status', 'in', ['queued', 'running'])
+    .limit(1)
+    .get();
+  if (!existing.empty) {
+    const doc = existing.docs[0];
+    return { ok: true, requestId: doc.id, status: doc.data().status as string, resumed: true };
+  }
+  const ref = db.collection('deletionRequests').doc();
+  await ref.set({
+    ownerId: uid,
+    tenantId: caller.claimsTenantId ?? null,
+    status: 'queued',
+    stepIndex: 0,
+    lastDocId: null,
+    processed: 0,
+    deleted: 0,
+    anonymised: 0,
+    exportUrl: null,
+    exportError: null,
+    error: null,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+    completedAt: null,
   });
-  return result;
+  return { ok: true, requestId: ref.id, status: 'queued', resumed: false };
 });
+
+/**
+ * processDeletion — advance one deletion job by one bounded pass.
+ * The job owner calls it repeatedly until the job is 'done'. The
+ * scheduled sweeper finishes jobs whose client disconnected.
+ */
+export const processDeletion = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as { requestId?: string } & ActingInput;
+  if (!data.requestId) {
+    throw new HttpsError('invalid-argument', 'requestId is required.');
+  }
+  const ref = db.collection('deletionRequests').doc(data.requestId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Deletion job not found.');
+  const job = deletionJobFrom(snap.data() as FirebaseFirestore.DocumentData);
+  if (job.ownerId !== caller.uid) {
+    throw new HttpsError('permission-denied', 'Only the job owner may advance their deletion.');
+  }
+  if (job.status === 'done') {
+    return { ok: true, requestId: ref.id, status: 'done', processed: job.processed, deleted: job.deleted, anonymised: job.anonymised, exportUrl: job.exportUrl, exportError: job.exportError };
+  }
+  if (job.status === 'failed') {
+    throw new HttpsError('failed-precondition', `Deletion job failed: ${job.error ?? 'unknown error'}.`);
+  }
+  // Soft lease: a fresh 'running' job means another pass is in progress.
+  if (
+    job.status === 'running' &&
+    job.updatedAt &&
+    Date.now() - job.updatedAt.toMillis() < DELETION_LEASE_MS
+  ) {
+    throw new HttpsError('aborted', 'A deletion pass is already in progress. Retry shortly.');
+  }
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? 'demo-hub' },
+    true,
+    true, // migration bridge
+  );
+  const decision = authorizeCommand({
+    authenticated: true,
+    uid: caller.uid,
+    actingGrant: ctx.actingGrant,
+    claimsRoles: caller.claimsRoles,
+    useClaimsFallback: ctx.migrationFallback,
+    command: 'processDeletion',
+    highRisk: true,
+    scope: { tenantId: caller.claimsTenantId ?? 'demo-hub', scopeType: 'self', scopeId: caller.uid },
+    relationship: 'owner',
+    relationshipRequired: true,
+    purpose: data.purpose ?? 'delete my data',
+    consentRequired: false,
+    consentLive: null,
+  });
+  if (!decision.allowed) {
+    throw new HttpsError('permission-denied', decision.reason);
+  }
+  try {
+    const result = await runDeletionPass(ref, job);
+    return { ok: true, requestId: ref.id, ...result };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'deletion pass failed';
+    await ref.update({ status: 'failed', error: message, updatedAt: FieldValue.serverTimestamp() });
+    throw new HttpsError('internal', message);
+  }
+});
+
+/**
+ * processDeletionQueue — hourly sweeper. Finishes deletion jobs whose
+ * client disconnected. Skips fresh 'running' jobs (a pass may be in
+ * progress) and failed jobs (they need human review, not auto-retry).
+ */
+export const processDeletionQueue = onSchedule(
+  { schedule: 'every hour', timeZone: 'America/Toronto' },
+  async () => {
+    const snap = await db
+      .collection('deletionRequests')
+      .where('status', 'in', ['queued', 'running'])
+      .limit(5)
+      .get();
+    for (const doc of snap.docs) {
+      const job = deletionJobFrom(doc.data());
+      if (
+        job.status === 'running' &&
+        job.updatedAt &&
+        Date.now() - job.updatedAt.toMillis() < DELETION_LEASE_MS
+      ) {
+        continue;
+      }
+      try {
+        await runDeletionPass(doc.ref, job);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'deletion pass failed';
+        await doc.ref.update({ status: 'failed', error: message, updatedAt: FieldValue.serverTimestamp() });
+      }
+    }
+  },
+);
 
 /**
  * aggregateEvaluation — weekly. Reads raw evaluation submissions and

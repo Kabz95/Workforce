@@ -49,7 +49,45 @@ export const LEGACY_ROLE_MAP: Record<string, string> = {
   employer: 'employer',
 };
 
-/** A role string is canonical if it is one of the 13 or systemAdmin. */
+/**
+ * Purpose taxonomy (Phase 2) — MIRROR of the Kernel's PURPOSE_TAXONOMY
+ * (functions/src/kernel.ts). The server enforces it: any purpose not
+ * in this list is rejected by authorizeCommand / the gateway. If you
+ * change the Kernel list, update this mirror (and vice versa).
+ */
+export const PURPOSE_TAXONOMY: readonly string[] = [
+  'wayfinding support',
+  'peer mentorship',
+  'supervision reflection',
+  'certification navigation',
+  'pathway review',
+  'handoff coordination',
+  'share a record',
+  'export my data',
+  'delete my data',
+  'consent expiry',
+  'consent revocation',
+  'grant a role',
+  'resolve a proposed grant',
+  'revoke a role grant',
+  'declare a conflict',
+  'request a role grant',
+  'respond to a handoff',
+  'person record setup',
+];
+
+/**
+ * Purposes a worker may choose when granting access (Consents) or
+ * describing a handoff. The full taxonomy above is enforced server-side.
+ */
+export const WORKER_PURPOSE_OPTIONS: readonly string[] = [
+  'wayfinding support',
+  'peer mentorship',
+  'supervision reflection',
+  'certification navigation',
+  'pathway review',
+  'handoff coordination',
+];
 export function isCanonicalRole(value: string): value is AnyRole {
   return (
     value === 'systemAdmin' ||
@@ -384,9 +422,31 @@ export type AuditLog = AccessEvent;
 
 export interface DeletionRequest {
   ownerId: string;
-  tenantId: string;
-  status: 'pending' | 'processing' | 'done' | 'failed';
+  tenantId: string | null;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  stepIndex: number;
+  lastDocId: string | null;
+  processed: number;
+  deleted: number;
+  anonymised: number;
+  exportUrl: string | null;
+  exportError: string | null;
+  error: string | null;
   createdAt: Timestamp;
+  updatedAt: Timestamp;
+  completedAt: Timestamp | null;
+}
+
+/** Result of one deletion pass (processDeletion). */
+export interface DeletionPassResult {
+  requestId: string;
+  status: 'queued' | 'running' | 'done' | 'failed';
+  processed: number;
+  deleted: number;
+  anonymised: number;
+  exportUrl: string | null;
+  exportError: string | null;
+  resumed?: boolean;
 }
 
 export type FirestoreErrorLike = {

@@ -107,7 +107,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'worker',
     'Peer Worker',
     'At the centre. The worker holds their own record, their own consent, and their own pathway.',
-    ['/', '/record', '/pathway', '/consents', '/opportunities', '/governance', '/audit', '/grants'],
+    ['/', '/record', '/pathway', '/consents', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Other workers’ records',
       'Mentorship or supervision notes about other workers',
@@ -128,7 +128,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'mentor',
     'Mentor',
     'Walks alongside a peer worker. Holds the relationship, not the record.',
-    ['/', '/opportunities', '/governance', '/audit', '/grants'],
+    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Worker records without a live consent grant',
       'Supervision observations',
@@ -149,7 +149,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'supervisor',
     'Peer-Practice Supervisor',
     'Holds the practice: reflective supervision for peer workers, by lived experience.',
-    ['/', '/opportunities', '/governance', '/audit', '/grants'],
+    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Worker records without a live consent grant',
       'Line-manager reporting channels',
@@ -170,7 +170,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'navigator',
     'Navigator',
     'Helps a peer worker find their way: certification, training, opportunities, systems.',
-    ['/', '/record', '/pathway', '/opportunities', '/governance', '/audit', '/grants'],
+    ['/', '/record', '/pathway', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Worker records without a live consent grant',
       'Supervision observations',
@@ -211,7 +211,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'hubCoordinator',
     'Hub Coordinator',
     'Holds the hub: coordination, safety, and the agreements that let the circle hold.',
-    ['/', '/opportunities', '/governance', '/audit', '/grants'],
+    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Individual worker records (no hub view of worker records exists)',
       'Supervision or mentorship content',

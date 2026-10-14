@@ -29,9 +29,11 @@ import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import {
   authorizeCommand,
   buildAccessEvent,
+  commandAllowsRole,
   evaluateGrantRequest,
   grantCoversScope,
   isGrantLive,
+  isValidPurpose,
   mayAuthorizeGrant,
   migrateLegacyRole,
   selectDefaultGrant,
@@ -205,6 +207,24 @@ function denyIfNotAllowed(
   if (!decision.allowed) {
     throw new HttpsError('permission-denied', decision.reason);
   }
+}
+
+/**
+ * Gateway purpose validation (Phase 2). Handlers that do NOT run the
+ * kernel's authorizeCommand must still validate their purpose against
+ * the central taxonomy — the gateway validates purpose, the kernel
+ * owns the vocabulary. Returns the validated purpose (or the fallback
+ * when the caller sent none).
+ */
+function validatePurpose(purpose: unknown, fallback: string): string {
+  if (purpose === undefined || purpose === null) return fallback;
+  if (!isValidPurpose(purpose)) {
+    throw new HttpsError(
+      'invalid-argument',
+      `Purpose "${String(purpose)}" is not in the purpose taxonomy.`,
+    );
+  }
+  return purpose;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +495,7 @@ export const resolveRoleGrantFn = onCall(async (request) => {
   if (!data.grantId || (data.decision !== 'approve' && data.decision !== 'deny')) {
     throw new HttpsError('invalid-argument', 'grantId and decision approve|deny are required.');
   }
+  const purpose = validatePurpose(data.purpose, 'resolve a proposed grant');
   const ref = db.collection(GRANTS).doc(data.grantId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Grant not found.');
@@ -518,7 +539,7 @@ export const resolveRoleGrantFn = onCall(async (request) => {
       resourceId: ref.id,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
-      purpose: data.purpose ?? 'resolve a proposed grant',
+      purpose,
       correlationId: ref.id,
       result: 'allowed',
       detail: { role: grant.role, reason: data.reason ?? null },
@@ -542,6 +563,7 @@ export const revokeRoleGrantFn = onCall(async (request) => {
     actingRole?: string | null;
   };
   if (!data.grantId) throw new HttpsError('invalid-argument', 'grantId is required.');
+  const purpose = validatePurpose(data.purpose, 'revoke a role grant');
   const ref = db.collection(GRANTS).doc(data.grantId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Grant not found.');
@@ -578,7 +600,7 @@ export const revokeRoleGrantFn = onCall(async (request) => {
       resourceId: ref.id,
       actingRole: actingGrant?.role ?? 'self-relinquish',
       actingGrantId: actingGrant?.id ?? null,
-      purpose: data.purpose ?? 'revoke a role grant',
+      purpose,
       correlationId: ref.id,
       result: 'allowed',
       detail: { role: grant.role, reason: data.reason ?? null },
@@ -604,6 +626,7 @@ export const declareConflictFn = onCall(async (request) => {
   if (!data.description) {
     throw new HttpsError('invalid-argument', 'description is required.');
   }
+  const purpose = validatePurpose(data.purpose, 'declare a conflict');
   const ref = db.collection(CONFLICTS).doc();
   await db.runTransaction(async (tx) => {
     tx.set(ref, {
@@ -623,7 +646,7 @@ export const declareConflictFn = onCall(async (request) => {
       resourceId: ref.id,
       actingRole: 'self',
       actingGrantId: null,
-      purpose: data.purpose ?? 'declare a conflict',
+      purpose,
       correlationId: ref.id,
       result: 'allowed',
     });
@@ -634,8 +657,6 @@ export const declareConflictFn = onCall(async (request) => {
 // ---------------------------------------------------------------------------
 // Handoffs (minimal, Phase 2 slice shape)
 // ---------------------------------------------------------------------------
-
-const HANDOFF_SENDERS: readonly AnyRole[] = ['navigator', 'hubCoordinator', 'supervisor', 'mentor'];
 
 export const createHandoffFn = onCall(async (request) => {
   const caller = callerFrom(request);
@@ -668,7 +689,9 @@ export const createHandoffFn = onCall(async (request) => {
     true,
   );
   const actingGrant = ctx.actingGrant;
-  if (!actingGrant || !HANDOFF_SENDERS.includes(actingGrant.role)) {
+  // Sender roles come from the central command matrix (kernel.ts) —
+  // there is exactly one list of handoff senders in the system.
+  if (!actingGrant || !commandAllowsRole('createHandoff', actingGrant.role)) {
     throw new HttpsError(
       'permission-denied',
       'Only navigator, hubCoordinator, supervisor, or mentor grants may send handoffs.',
@@ -773,6 +796,7 @@ export const respondHandoffFn = onCall(async (request) => {
   if (!data.handoffId || (data.decision !== 'accept' && data.decision !== 'decline')) {
     throw new HttpsError('invalid-argument', 'handoffId and decision accept|decline are required.');
   }
+  const purpose = validatePurpose(data.purpose, 'respond to a handoff');
   const ref = db.collection(HANDOFFS).doc(data.handoffId);
   const snap = await ref.get();
   if (!snap.exists) throw new HttpsError('not-found', 'Handoff not found.');
@@ -814,12 +838,122 @@ export const respondHandoffFn = onCall(async (request) => {
       resourceId: ref.id,
       actingRole: recipientGrant.role,
       actingGrantId: recipientGrant.id ?? null,
-      purpose: data.purpose ?? 'respond to a handoff',
+      purpose,
       correlationId: ref.id,
       result: 'allowed',
     });
   });
   return { ok: true, handoffId: ref.id, status: transition.to };
+});
+
+// ---------------------------------------------------------------------------
+// closeHandoff — the recipient closes an offered or accepted handoff.
+// The worker is the subject, not the closer. Closing writes the audit
+// event; it does not itself remove access (access ends when the
+// underlying consent is revoked or expires — the worker controls that).
+// ---------------------------------------------------------------------------
+
+export const closeHandoffFn = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    handoffId?: string;
+    purpose?: string;
+    actingGrantId?: string | null;
+    actingRole?: string | null;
+  };
+  if (!data.handoffId) {
+    throw new HttpsError('invalid-argument', 'handoffId is required.');
+  }
+  const purpose = validatePurpose(data.purpose, 'handoff coordination');
+  const ref = db.collection(HANDOFFS).doc(data.handoffId);
+  const snap = await ref.get();
+  if (!snap.exists) throw new HttpsError('not-found', 'Handoff not found.');
+  const h = snap.data() as Handoff & { status: Handoff['status'] };
+  if (h.status !== 'offered' && h.status !== 'accepted') {
+    throw new HttpsError('failed-precondition', `Handoff is ${h.status}, not offered or accepted.`);
+  }
+  // Only the RECIPIENT may close (same rule as responding).
+  if (h.recipientId !== caller.uid) {
+    throw new HttpsError('permission-denied', 'Only the handoff recipient may close it.');
+  }
+  const recipientGrants = await liveGrantsFor(caller.uid);
+  const recipientGrant = recipientGrants.find(
+    (g) =>
+      g.role === h.recipientRole &&
+      grantCoversScope(g, { tenantId: h.tenantId, scopeType: 'hub', scopeId: h.tenantId }),
+  );
+  if (!recipientGrant) {
+    throw new HttpsError(
+      'permission-denied',
+      'The recipient does not hold a live grant for the recipient role in this scope.',
+    );
+  }
+  const transition = transitionHandoff(h.status, 'close');
+  if (!transition.ok || !transition.to) {
+    throw new HttpsError('failed-precondition', transition.reason);
+  }
+  await db.runTransaction(async (tx) => {
+    tx.update(ref, { status: transition.to, updatedAt: FieldValue.serverTimestamp() });
+    writeAccessEventInTx(tx, {
+      subjectId: h.workerId,
+      actorId: caller.uid,
+      action: 'closeHandoff',
+      resourceType: 'handoff',
+      resourceId: ref.id,
+      actingRole: recipientGrant.role,
+      actingGrantId: recipientGrant.id ?? null,
+      purpose,
+      correlationId: ref.id,
+      result: 'allowed',
+    });
+  });
+  return { ok: true, handoffId: ref.id, status: transition.to };
+});
+
+// ---------------------------------------------------------------------------
+// ensureMyPerson — create the caller's own persons doc, exactly once.
+// ---------------------------------------------------------------------------
+
+export const ensureMyPersonFn = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as { purpose?: string };
+  const purpose = validatePurpose(data.purpose, 'person record setup');
+  // The persons doc is created by the SERVER (Admin SDK), not by the
+  // client: the rules' client-create path requires a claim tenant, and
+  // a fresh signup has no claims yet (the claim-less bootstrap). The
+  // callable is the one path that works for every signup. The
+  // transaction's existence check makes creation exactly-once, even
+  // under concurrent sign-ins.
+  const user = await getAuth().getUser(caller.uid);
+  const displayName = user.displayName ?? '';
+  const email = user.email ?? '';
+  const tenantId = caller.claimsTenantId ?? 'demo-hub';
+  const ref = db.collection(PERSONS).doc(caller.uid);
+  const result = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.exists) return { created: false };
+    tx.set(ref, {
+      displayName,
+      email,
+      tenantId,
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    writeAccessEventInTx(tx, {
+      subjectId: caller.uid,
+      actorId: caller.uid,
+      action: 'ensurePerson',
+      resourceType: 'person',
+      resourceId: caller.uid,
+      actingRole: 'self',
+      actingGrantId: null,
+      purpose,
+      correlationId: caller.uid,
+      result: 'allowed',
+    });
+    return { created: true };
+  });
+  return { ok: true, ...result };
 });
 
 // ---------------------------------------------------------------------------

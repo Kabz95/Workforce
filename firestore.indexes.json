@@ -20,6 +20,20 @@
       "queryScope": "COLLECTION"
     },
     {
+      "collectionGroup": "firstContactForms",
+      "fields": [
+        {
+          "fieldPath": "sharedWith",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
       "collectionGroup": "pathwaySteps",
       "fields": [
         {
@@ -33,6 +47,20 @@
         {
           "fieldPath": "createdAt",
           "order": "DESCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "pathwaySteps",
+      "fields": [
+        {
+          "fieldPath": "sharedWith",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
         }
       ],
       "queryScope": "COLLECTION"
@@ -124,6 +152,20 @@
         },
         {
           "fieldPath": "revokedAt",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "consents",
+      "fields": [
+        {
+          "fieldPath": "granteeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
           "order": "ASCENDING"
         }
       ],
@@ -282,6 +324,20 @@
       "fields": [
         {
           "fieldPath": "workerId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "handoffs",
+      "fields": [
+        {
+          "fieldPath": "senderId",
           "order": "ASCENDING"
         },
         {

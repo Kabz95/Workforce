@@ -1,78 +1,50 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { listAggregates } from '../lib/queries';
 import {
-  listAggregates,
-  listMyConsents,
-  listMyHandoffs,
-  listMyPathwaySteps,
-} from '../lib/queries';
-import {
-  formatTimestamp,
   ROLE_LABELS,
   type WithId,
   type Aggregate,
-  type Consent,
-  type Handoff,
-  type PathwayStep,
 } from '../lib/types';
-import { getManifest, ZONE_ORDER, ZONE_LABELS } from '../lib/manifests';
+import { getManifest } from '../lib/manifests';
 import { registerAbortController } from '../lib/roleState';
 import ErrorNotice from '../components/ErrorNotice';
+import WorkerDashboard from '../components/dashboards/WorkerDashboard';
+import NavigatorDashboard from '../components/dashboards/NavigatorDashboard';
+import HubCoordinatorDashboard from '../components/dashboards/HubCoordinatorDashboard';
 
 /**
- * Manifest-driven dashboard.
- * The seven fixed zones render from the acting role's manifest.
- * Zone contents are Phase 1 placeholders fed by real queries where
- * they exist (worker pathway/consents, aggregates, handoffs); per-role
- * widgets land in later phases inside these same zones.
+ * Manifest-driven dashboard (Phase 2).
+ *
+ * The manifest supplies the shell: acting context, one-sentence
+ * purpose, and the explicit boundaries (what this role never sees).
+ * The role-specific dashboard components below supply the real work
+ * surfaces — Worker, Navigator, and Hub Coordinator are wired to live
+ * data; the other roles render the manifest fallback (aggregates for
+ * analyst / steering / council, links for the rest) until their
+ * dashboards land in later phases.
  */
 export default function Dashboard() {
   const { user, actingRole, tenantId } = useAuth();
-  const [steps, setSteps] = useState<WithId<PathwayStep>[]>([]);
-  const [consents, setConsents] = useState<WithId<Consent>[]>([]);
   const [aggregates, setAggregates] = useState<WithId<Aggregate>[]>([]);
-  const [handoffs, setHandoffs] = useState<WithId<Handoff>[]>([]);
   const [error, setError] = useState<unknown>(null);
 
   const manifest = actingRole ? getManifest(actingRole) : null;
 
   useEffect(() => {
     if (!user || !actingRole) return;
+    if (!['analyst', 'steeringCircle', 'council'].includes(actingRole)) return;
     const controller = new AbortController();
     const unregister = registerAbortController(controller);
     let cancelled = false;
-    const load = async () => {
-      try {
-        const results = await Promise.allSettled([
-          actingRole === 'worker'
-            ? listMyPathwaySteps(user.uid, tenantId)
-            : Promise.resolve([]),
-          actingRole === 'worker'
-            ? listMyConsents(user.uid, tenantId)
-            : Promise.resolve([]),
-          ['analyst', 'steeringCircle', 'council'].includes(actingRole)
-            ? listAggregates(tenantId)
-            : Promise.resolve([]),
-          listMyHandoffs(user.uid, tenantId),
-        ]);
-        if (cancelled || controller.signal.aborted) return;
-        const [s, c, a, h] = results.map((r) =>
-          r.status === 'fulfilled' ? r.value : [],
-        );
-        setSteps(s as WithId<PathwayStep>[]);
-        setConsents(
-          (c as WithId<Consent>[]).filter(
-            (x) => !x.revokedAt && x.expiresAt.toDate() > new Date(),
-          ),
-        );
-        setAggregates(a as WithId<Aggregate>[]);
-        setHandoffs(h as WithId<Handoff>[]);
-      } catch (err) {
+    void listAggregates(tenantId)
+      .then((a) => {
+        if (!cancelled && !controller.signal.aborted) setAggregates(a);
+      })
+      .catch((err) => {
         if (!cancelled) setError(err);
-      }
-    };
-    void load();
+      });
     return () => {
       cancelled = true;
       unregister();
@@ -99,107 +71,84 @@ export default function Dashboard() {
         Signed in as <strong>{user?.email}</strong> · Hub: {tenantId} ·
         Acting as: <strong>{manifest.label}</strong>
       </p>
+      <section className="card">
+        <h2>Acting context</h2>
+        <p className="muted">{manifest.zones.actingContext}</p>
+      </section>
+      <section className="card">
+        <h2>Role purpose</h2>
+        <p className="muted">{manifest.purpose}</p>
+        <p className="muted">{manifest.zones.purpose}</p>
+      </section>
       <ErrorNotice error={error} />
 
-      {ZONE_ORDER.map((zone) => (
-        <section key={zone} className="card">
-          <h2>{ZONE_LABELS[zone]}</h2>
-          <p className="muted">{manifest.zones[zone]}</p>
-          {zone === 'attentionQueue' && actingRole === 'worker' && (
-            <>
-              {steps.length > 0 && (
-                <ul>
-                  {steps.slice(0, 5).map((s) => (
-                    <li key={s.id}>
-                      {s.title} — <span className="pill">{s.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {consents.length > 0 && (
-                <ul>
-                  {consents.slice(0, 5).map((c) => (
-                    <li key={c.id}>
-                      Live grant: {c.scope} → {c.granteeId} · expires{' '}
-                      {formatTimestamp(c.expiresAt)}
-                    </li>
-                  ))}
-                </ul>
-              )}
-              {steps.length === 0 && consents.length === 0 && (
-                <p className="muted">
-                  Nothing awaiting you. <Link to="/pathway">Add a pathway step</Link>.
-                </p>
-              )}
-            </>
-          )}
-          {zone === 'coreWork' && actingRole === 'worker' && (
-            <p>
-              <Link to="/record">My record →</Link>{' '}
-              <Link to="/pathway">Pathway →</Link>{' '}
-              <Link to="/consents">Consents →</Link>
-            </p>
-          )}
-          {zone === 'coreWork' && actingRole === 'employer' && (
-            <p>
-              <Link to="/readiness">Employer readiness self-assessment →</Link>{' '}
-              <Link to="/opportunities">Postings and applications →</Link>
-            </p>
-          )}
-          {zone === 'coreWork' && ['analyst', 'steeringCircle', 'council'].includes(actingRole) && (
-            <>
-              {aggregates.length === 0 ? (
-                <p className="muted">No aggregates published yet for this hub.</p>
-              ) : (
-                <table>
-                  <thead>
-                    <tr><th>Metric</th><th>Period</th><th>Value</th></tr>
-                  </thead>
-                  <tbody>
-                    {aggregates.slice(0, 10).map((a) => (
-                      <tr key={a.id}>
-                        <td>{a.metric}</td>
-                        <td>{a.period}</td>
-                        <td>{a.value}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              )}
-              <p><Link to="/aggregates">All aggregates →</Link></p>
-            </>
-          )}
-          {zone === 'handoffs' && (
-            <>
-              {handoffs.length === 0 ? (
-                <p className="muted">No handoffs addressed to you or your record.</p>
-              ) : (
-                <ul>
-                  {handoffs.slice(0, 5).map((h) => (
-                    <li key={h.id}>
-                      {h.purpose} — from {h.senderRole} to {h.recipientRole} ·{' '}
-                      <span className="pill">{h.status}</span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </>
-          )}
-          {zone === 'learningAccountability' && (
+      {actingRole === 'worker' && <WorkerDashboard />}
+      {actingRole === 'navigator' && <NavigatorDashboard />}
+      {actingRole === 'hubCoordinator' && <HubCoordinatorDashboard />}
+
+      {actingRole !== 'worker' && actingRole !== 'navigator' && actingRole !== 'hubCoordinator' && (
+        <>
+          <section className="card">
+            <h2>Attention queue</h2>
+            <p className="muted">{manifest.zones.attentionQueue}</p>
+          </section>
+          <section className="card">
+            <h2>Core work</h2>
+            <p className="muted">{manifest.zones.coreWork}</p>
+            {actingRole === 'employer' && (
+              <p>
+                <Link to="/readiness">Employer readiness self-assessment →</Link>{' '}
+                <Link to="/opportunities">Postings and applications →</Link>
+              </p>
+            )}
+            {['analyst', 'steeringCircle', 'council'].includes(actingRole) && (
+              <>
+                {aggregates.length === 0 ? (
+                  <p className="muted">No aggregates published yet for this hub.</p>
+                ) : (
+                  <table>
+                    <thead>
+                      <tr><th>Metric</th><th>Period</th><th>Value</th></tr>
+                    </thead>
+                    <tbody>
+                      {aggregates.slice(0, 10).map((a) => (
+                        <tr key={a.id}>
+                          <td>{a.metric}</td>
+                          <td>{a.period}</td>
+                          <td>{a.value}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                <p><Link to="/aggregates">All aggregates →</Link></p>
+              </>
+            )}
+          </section>
+          <section className="card">
+            <h2>Handoffs</h2>
+            <p className="muted">{manifest.zones.handoffs}</p>
+            <p><Link to="/handoffs">Handoffs →</Link></p>
+          </section>
+          <section className="card">
+            <h2>Learning + accountability</h2>
+            <p className="muted">{manifest.zones.learningAccountability}</p>
             <p>
               <Link to="/audit">My audit log →</Link>{' '}
               <Link to="/grants">My roles &amp; grants →</Link>
             </p>
-          )}
-          {zone === 'boundaries' && (
-            <ul>
-              {manifest.neverShows.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
+          </section>
+        </>
+      )}
+
+      <section className="card">
+        <h2>Boundaries — never shows</h2>
+        <ul>
+          {manifest.neverShows.map((item) => (
+            <li key={item}>{item}</li>
+          ))}
+        </ul>
+      </section>
     </div>
   );
 }

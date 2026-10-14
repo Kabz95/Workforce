@@ -3,6 +3,7 @@ import {
   collection,
   deleteDoc,
   doc,
+  getDoc,
   getDocs,
   query,
   serverTimestamp,
@@ -15,14 +16,19 @@ import { httpsCallable } from 'firebase/functions';
 import { db, functions } from './firebase';
 import type {
   AccessEvent,
+  AdaptationLog,
+  Assignment,
   CertificationNavigation,
   Complaint,
   ConflictDeclaration,
   Consent,
+  DeletionPassResult,
+  DeletionRequest,
   Employer,
   FirstContactForm,
   GovernanceDecision,
   Handoff,
+  Membership,
   Opportunity,
   OpportunityApplication,
   PathwayStep,
@@ -226,15 +232,21 @@ const SHAREABLE_COLLECTIONS: Record<string, string> = {
   firstContactForms: 'firstContactForms',
   pathwaySteps: 'pathwaySteps',
   certificationNavigation: 'certificationNavigation',
+  // Phase 2: supervision sessions are shareable (the supervisor reads
+  // ONLY through a live worker consent — see the rules block).
+  supervisionSessions: 'supervisionSessions',
 };
 
 const grantAccess = httpsCallable(functions, 'grantAccess');
 const requestExportFn = httpsCallable(functions, 'requestExport');
 const requestDeletionFn = httpsCallable(functions, 'requestDeletion');
+const processDeletionFn = httpsCallable(functions, 'processDeletion');
+const ensureMyPersonFn = httpsCallable(functions, 'ensureMyPerson');
 const requestRoleGrantFn = httpsCallable(functions, 'requestRoleGrant');
 const declareConflictFn = httpsCallable(functions, 'declareConflict');
 const createHandoffFn = httpsCallable(functions, 'createHandoff');
 const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
+const closeHandoffFn = httpsCallable(functions, 'closeHandoff');
 
 export async function grantConsent(
   granterId: string,
@@ -302,14 +314,46 @@ export async function requestMyExport(acting?: ActingInput): Promise<string> {
   return (result.data as { url: string }).url;
 }
 
-/** Delete all of the caller's own data (anonymises shared records). */
-export async function requestMyDeletion(acting?: ActingInput): Promise<void> {
-  await requestDeletionFn({
+/** Delete all of the caller's own data (anonymises shared records).
+ *  Creates (or resumes) a resumable deletion job; returns its id. */
+export async function requestMyDeletion(acting?: ActingInput): Promise<DeletionPassResult> {
+  const result = await requestDeletionFn({
     actingGrantId: acting?.actingGrantId ?? null,
     actingRole: acting?.actingRole ?? null,
     purpose: acting?.purpose ?? 'delete my data',
     idempotencyKey: newIdempotencyKey(),
   });
+  return result.data as DeletionPassResult;
+}
+
+/** Advance one deletion job by one bounded pass. */
+export async function processDeletion(requestId: string, acting?: ActingInput): Promise<DeletionPassResult> {
+  const result = await processDeletionFn({
+    requestId,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'delete my data',
+    idempotencyKey: newIdempotencyKey(),
+  });
+  return result.data as DeletionPassResult;
+}
+
+/** Read one deletion job (owner only — rules enforce this). */
+export async function getDeletionRequest(requestId: string): Promise<WithId<DeletionRequest> | null> {
+  const snap = await getDoc(doc(db, 'deletionRequests', requestId));
+  if (!snap.exists()) return null;
+  return toDoc<DeletionRequest>(snap);
+}
+
+/** Create the caller's own persons doc, exactly once (server-side).
+ *  Called once per session from AuthContext after sign-in. */
+export async function ensureMyPerson(acting?: ActingInput): Promise<{ created: boolean }> {
+  const result = await ensureMyPersonFn({
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'person record setup',
+  });
+  return result.data as { created: boolean };
 }
 
 // --- Role grants, conflicts, handoffs (Role Kernel) ---
@@ -381,17 +425,38 @@ export async function respondHandoff(
     ...data,
     actingGrantId: acting?.actingGrantId ?? null,
     actingRole: acting?.actingRole ?? null,
-    purpose: acting?.purpose ?? `handoff ${data.decision}`,
+    purpose: acting?.purpose ?? 'respond to a handoff',
     idempotencyKey: newIdempotencyKey(),
   });
 }
 
-/** Handoffs where the caller is the worker or the recipient. */
+/** Close an offered or accepted handoff (recipient only). */
+export async function closeHandoff(
+  data: { handoffId: string },
+  acting?: ActingInput,
+): Promise<void> {
+  await closeHandoffFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'handoff coordination',
+    idempotencyKey: newIdempotencyKey(),
+  });
+}
+
+/** Handoffs where the caller is the worker, the sender, or the recipient. */
 export async function listMyHandoffs(uid: string, tenantId: string): Promise<WithId<Handoff>[]> {
   const asWorker = await getDocs(
     query(
       collection(db, 'handoffs'),
       where('workerId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const asSender = await getDocs(
+    query(
+      collection(db, 'handoffs'),
+      where('senderId', '==', uid),
       where('tenantId', '==', tenantId),
     ),
   );
@@ -403,8 +468,42 @@ export async function listMyHandoffs(uid: string, tenantId: string): Promise<Wit
     ),
   );
   const byId = new Map<string, WithId<Handoff>>();
-  for (const d of [...asWorker.docs, ...asRecipient.docs]) byId.set(d.id, toDoc<Handoff>(d));
+  for (const d of [...asWorker.docs, ...asSender.docs, ...asRecipient.docs]) byId.set(d.id, toDoc<Handoff>(d));
   return [...byId.values()];
+}
+
+/** Consents where the caller is the grantee (what was shared WITH me). */
+export async function listConsentsReceived(uid: string, tenantId: string): Promise<WithId<Consent>[]> {
+  const q = query(
+    collection(db, 'consents'),
+    where('granteeId', '==', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Consent>(d));
+}
+
+/** First-contact forms shared WITH the caller (navigator's intake queue).
+ *  The caller sees only forms a worker consented to share with them. */
+export async function listSharedFirstContactForms(uid: string, tenantId: string): Promise<WithId<FirstContactForm>[]> {
+  const q = query(
+    collection(db, 'firstContactForms'),
+    where('sharedWith', 'array-contains', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<FirstContactForm>(d));
+}
+
+/** Pathway steps shared WITH the caller (navigator's pathway view). */
+export async function listSharedPathwaySteps(uid: string, tenantId: string): Promise<WithId<PathwayStep>[]> {
+  const q = query(
+    collection(db, 'pathwaySteps'),
+    where('sharedWith', 'array-contains', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<PathwayStep>(d));
 }
 
 /** The caller's own conflict declarations. */
@@ -569,4 +668,44 @@ export async function listMyAuditLogs(uid: string): Promise<WithId<AccessEvent>[
   const q = query(collection(db, 'accessEvents'), where('subjectId', '==', uid));
   const snap = await getDocs(q);
   return snap.docs.map((d) => toDoc<AccessEvent>(d));
+}
+
+// --- Hub coordination (authoriser reads; tenant-scoped) ---
+// The hub coordinator sees grants, memberships, assignments, conflicts
+// and adaptation logs for their hub — NEVER worker records. Rules
+// enforce the authoriser + tenant pin on every one of these lists.
+
+/** All role grants in the hub (authoriser read). */
+export async function listHubRoleGrants(tenantId: string): Promise<WithId<RoleGrant>[]> {
+  const q = query(collection(db, 'roleGrants'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<RoleGrant>(d));
+}
+
+/** All memberships in the hub (authoriser read). */
+export async function listHubMemberships(tenantId: string): Promise<WithId<Membership>[]> {
+  const q = query(collection(db, 'memberships'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Membership>(d));
+}
+
+/** All assignments in the hub (hubCoordinator read). */
+export async function listHubAssignments(tenantId: string): Promise<WithId<Assignment>[]> {
+  const q = query(collection(db, 'assignments'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Assignment>(d));
+}
+
+/** All conflict declarations in the hub (authoriser read). */
+export async function listHubConflicts(tenantId: string): Promise<WithId<ConflictDeclaration>[]> {
+  const q = query(collection(db, 'conflictDeclarations'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<ConflictDeclaration>(d));
+}
+
+/** Adaptation logs in the hub (safety procedures / local adaptations). */
+export async function listAdaptationLogs(tenantId: string): Promise<WithId<AdaptationLog>[]> {
+  const q = query(collection(db, 'adaptationLogs'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<AdaptationLog>(d));
 }

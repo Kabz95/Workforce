@@ -9,6 +9,7 @@ const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/record', label: 'My Record', roles: ['worker', 'navigator', 'supervisor'] },
   { to: '/pathway', label: 'Pathway', roles: ['worker', 'navigator'] },
   { to: '/consents', label: 'Consents', roles: ['worker'] },
+  { to: '/handoffs', label: 'Handoffs', roles: ['worker', 'navigator', 'hubCoordinator', 'supervisor', 'mentor'] },
   { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubCoordinator'] },
   { to: '/opportunities', label: 'Opportunities' },
   { to: '/governance', label: 'Governance' },

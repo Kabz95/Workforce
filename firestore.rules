@@ -261,6 +261,28 @@ service cloud.firestore {
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
+    // ---- Supervision sessions (Phase 2) ----
+    // Model (confirmed against types.ts + grantAccess + deletion):
+    // - ownerId = the worker who owns the session record.
+    // - supervisorId = the linked supervisor (a LINK, not an access
+    //   grant — it confers no read by itself).
+    // - sharedWith = consent-based readers. The supervisor reads ONLY
+    //   through a live worker consent (grantAccess), never via
+    //   supervisorId. This block mirrors the other shareable
+    //   collections exactly: owner OR sharedWith, tenant-scoped.
+    match /supervisionSessions/{sessionId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.get('sharedWith', []) == [];
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+    }
+
     // ---- Consents (consent grants) ----
     match /consents/{consentId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)

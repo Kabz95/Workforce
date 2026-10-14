@@ -21,6 +21,14 @@ import { auth, db, functions } from '../lib/firebase';
 import type { AnyRole, RoleGrant, Role } from '../lib/types';
 import { ROLE_DEFAULT_ORDER, canonicalRole, toMillis } from '../lib/types';
 import { clearRoleScopedState } from '../lib/roleState';
+import { ensureMyPerson } from '../lib/queries';
+
+/**
+ * Persons docs already ensured this page session (one attempt per
+ * account per load). ensureMyPerson is idempotent server-side, but
+ * there is no reason to call it on every auth-state flicker.
+ */
+const personsEnsured = new Set<string>();
 
 /** Client-side live check: active AND inside the validity window.
  *  Fail-closed: an expired grant never becomes an acting capacity,
@@ -134,6 +142,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const unsub = onAuthStateChanged(auth, async (u) => {
       setUser(u);
       if (u) {
+        // Ensure the caller's persons doc exists (server-side, exactly
+        // once). Fire-and-forget: a failure here must never block
+        // sign-in — the doc is not needed to render the session.
+        if (!personsEnsured.has(u.uid)) {
+          personsEnsured.add(u.uid);
+          void ensureMyPerson().catch(() => {
+            // The persons doc will be retried on the next page load.
+          });
+        }
         try {
           const token = await u.getIdTokenResult();
           const claims = token.claims as { role?: string; roles?: string[]; tenantId?: string };

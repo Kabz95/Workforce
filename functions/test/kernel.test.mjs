@@ -19,13 +19,20 @@ const require = createRequire(import.meta.url);
 const {
   authorizeCommand,
   buildAccessEvent,
+  commandAllowsRole,
+  COMMAND_MATRIX,
+  DELETION_PLAN,
   deriveConsentScope,
   evaluateGrantRequest,
   grantCoversScope,
+  GRANT_AUTHORITIES,
+  HANDOFF_SENDERS,
   isGrantLive,
   isValidIdempotencyKey,
+  isValidPurpose,
   mayAuthorizeGrant,
   migrateLegacyRole,
+  PURPOSE_TAXONOMY,
   selectDefaultGrant,
   transitionHandoff,
   validateGrantTransition,
@@ -441,5 +448,166 @@ describe('access events', () => {
     assert.equal(event.correlationId, 'corr-1');
     assert.equal(event.result, 'allowed');
     assert.equal(event.createdAt, '2026-10-13T00:00:00.000Z');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2: purpose taxonomy, command matrix, deletion plan
+// ---------------------------------------------------------------------------
+
+describe('purpose taxonomy (Phase 2)', () => {
+  it('accepts every taxonomy purpose, rejects free text', () => {
+    for (const p of PURPOSE_TAXONOMY) {
+      assert.equal(isValidPurpose(p), true, p);
+    }
+    assert.equal(isValidPurpose('test'), false);
+    assert.equal(isValidPurpose('supervision sharing'), false);
+    assert.equal(isValidPurpose(''), false);
+    assert.equal(isValidPurpose(null), false);
+    assert.equal(isValidPurpose(42), false);
+    assert.equal(isValidPurpose('Share a record'), false); // case-sensitive
+  });
+
+  it('covers every purpose the handlers use as a default', () => {
+    for (const p of [
+      'share a record', 'export my data', 'delete my data',
+      'consent expiry', 'consent revocation', 'grant a role',
+      'resolve a proposed grant', 'revoke a role grant',
+      'declare a conflict', 'request a role grant',
+      'respond to a handoff', 'handoff coordination',
+      'person record setup',
+    ]) {
+      assert.equal(isValidPurpose(p), true, p);
+    }
+  });
+
+  it('authorizeCommand denies a non-taxonomy purpose', () => {
+    const d = authorizeCommand(baseInput({ purpose: 'for reasons' }));
+    assert.equal(d.allowed, false);
+    assert.match(d.reason, /purpose-not-in-taxonomy/);
+  });
+
+  it('authorizeCommand allows each taxonomy purpose', () => {
+    for (const p of PURPOSE_TAXONOMY) {
+      const d = authorizeCommand(baseInput({ purpose: p }));
+      assert.equal(d.allowed, true, p);
+    }
+  });
+});
+
+describe('central role → command matrix (Phase 2)', () => {
+  it('HANDOFF_SENDERS is exactly navigator, hubCoordinator, supervisor, mentor', () => {
+    assert.deepEqual([...HANDOFF_SENDERS], ['navigator', 'hubCoordinator', 'supervisor', 'mentor']);
+    assert.deepEqual([...COMMAND_MATRIX.createHandoff.roles], [...HANDOFF_SENDERS]);
+  });
+
+  it('GRANT_AUTHORITIES is exactly council, backboneLead, hubCoordinator, steeringCircle', () => {
+    assert.deepEqual([...GRANT_AUTHORITIES], ['council', 'backboneLead', 'hubCoordinator', 'steeringCircle']);
+    assert.deepEqual([...COMMAND_MATRIX.createRoleGrant.roles], [...GRANT_AUTHORITIES]);
+  });
+
+  it('commandAllowsRole gates handoff + grant commands', () => {
+    assert.equal(commandAllowsRole('createHandoff', 'navigator'), true);
+    assert.equal(commandAllowsRole('createHandoff', 'hubCoordinator'), true);
+    assert.equal(commandAllowsRole('createHandoff', 'worker'), false);
+    assert.equal(commandAllowsRole('createHandoff', 'council'), false);
+    assert.equal(commandAllowsRole('createRoleGrant', 'council'), true);
+    assert.equal(commandAllowsRole('createRoleGrant', 'worker'), false);
+    assert.equal(commandAllowsRole('resolveRoleGrant', 'steeringCircle'), true);
+    assert.equal(commandAllowsRole('revokeRoleGrant', 'backboneLead'), true);
+  });
+
+  it('commandAllowsRole gates worker self-commands', () => {
+    assert.equal(commandAllowsRole('grantAccess', 'worker'), true);
+    assert.equal(commandAllowsRole('grantAccess', 'navigator'), false);
+    assert.equal(commandAllowsRole('requestExport', 'worker'), true);
+    assert.equal(commandAllowsRole('requestDeletion', 'worker'), true);
+    assert.equal(commandAllowsRole('processDeletion', 'worker'), true);
+  });
+
+  it('self-service commands allow any authenticated person', () => {
+    for (const cmd of ['respondHandoff', 'closeHandoff', 'requestRoleGrant', 'declareConflict', 'ensureMyPerson', 'getMyGrants']) {
+      assert.equal(commandAllowsRole(cmd, 'worker'), true, cmd);
+      assert.equal(commandAllowsRole(cmd, 'employer'), true, cmd);
+    }
+  });
+
+  it('every gateway callable is in the matrix', () => {
+    for (const cmd of [
+      'grantAccess', 'requestExport', 'requestDeletion', 'processDeletion',
+      'createHandoff', 'respondHandoff', 'closeHandoff',
+      'createRoleGrant', 'resolveRoleGrant', 'revokeRoleGrant',
+      'requestRoleGrant', 'declareConflict', 'ensureMyPerson', 'getMyGrants',
+    ]) {
+      assert.ok(COMMAND_MATRIX[cmd], cmd);
+      assert.equal(typeof COMMAND_MATRIX[cmd].highRisk, 'boolean', cmd);
+    }
+  });
+});
+
+describe('deletion plan (Phase 2)', () => {
+  const stepsFor = (collection, match) =>
+    DELETION_PLAN.filter((s) => s.collection === collection && (!match || s.match === match));
+
+  it('deletes every worker-owned collection (ownerId)', () => {
+    for (const coll of [
+      'workers', 'firstContactForms', 'pathwaySteps',
+      'certificationNavigation', 'evaluationSubmissions', 'opportunityApplications',
+    ]) {
+      const steps = stepsFor(coll, 'ownerId');
+      assert.equal(steps.length, 1, coll);
+      assert.equal(steps[0].action, 'delete', coll);
+    }
+  });
+
+  it('anonymises supervision sessions on BOTH sides (ownerId + supervisorId)', () => {
+    const owner = stepsFor('supervisionSessions', 'ownerId');
+    const sup = stepsFor('supervisionSessions', 'supervisorId');
+    assert.equal(owner.length, 1);
+    assert.equal(owner[0].action, 'anonymiseField');
+    assert.deepEqual([...(owner[0].fields ?? [])], ['ownerId']);
+    assert.equal(sup.length, 1);
+    assert.equal(sup[0].action, 'anonymiseField');
+  });
+
+  it('anonymises handoffs for all three parties', () => {
+    assert.equal(stepsFor('handoffs', 'workerId')[0].action, 'closeLink');
+    assert.equal(stepsFor('handoffs', 'senderId')[0].action, 'anonymiseField');
+    assert.equal(stepsFor('handoffs', 'recipientId')[0].action, 'anonymiseField');
+  });
+
+  it('sweeps sharedWith on every shareable collection', () => {
+    for (const coll of [
+      'firstContactForms', 'pathwaySteps',
+      'certificationNavigation', 'supervisionSessions',
+    ]) {
+      const steps = stepsFor(coll, 'sharedWith');
+      assert.equal(steps.length, 1, coll);
+      assert.equal(steps[0].action, 'stripUid', coll);
+    }
+  });
+
+  it('revokes consents in both directions and strips the target', () => {
+    const out = stepsFor('consents', 'granterId');
+    const inn = stepsFor('consents', 'granteeId');
+    assert.equal(out.length, 1);
+    assert.equal(out[0].action, 'revokeConsent');
+    assert.equal(out[0].stripTargetSharedWith, 'granteeId');
+    assert.equal(inn.length, 1);
+    assert.equal(inn[0].action, 'revokeConsent');
+    assert.equal(inn[0].stripTargetSharedWith, 'caller');
+  });
+
+  it('deletes memberships + profile docs, revokes (not deletes) grants', () => {
+    assert.equal(stepsFor('memberships', 'personId')[0].action, 'delete');
+    assert.equal(stepsFor('persons', 'docId')[0].action, 'delete');
+    assert.equal(stepsFor('users', 'docId')[0].action, 'delete');
+    assert.equal(stepsFor('roleGrants', 'granteeId')[0].action, 'revokeGrant');
+  });
+
+  it('keeps accountability records: no step touches accessEvents, aggregates, governanceDecisions, deletionRequests', () => {
+    for (const coll of ['accessEvents', 'aggregates', 'governanceDecisions', 'deletionRequests', 'idempotencyKeys']) {
+      assert.equal(DELETION_PLAN.filter((s) => s.collection === coll).length, 0, coll);
+    }
   });
 });

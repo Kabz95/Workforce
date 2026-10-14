@@ -8,6 +8,7 @@
     "build": "tsc",
     "test:kernel": "npm run build && node --test test/kernel.test.mjs",
     "test:rules": "node --test test/rules.test.mjs",
+    "test:callable": "node --test test/callable.test.mjs",
     "test": "npm run test:kernel && npm run test:rules",
     "serve": "npm run build && firebase emulators:start --only functions",
     "deploy": "firebase deploy --only functions",

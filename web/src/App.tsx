@@ -8,6 +8,7 @@ import WorkerRecord from './pages/WorkerRecord';
 import Pathway from './pages/Pathway';
 import Consents from './pages/Consents';
 import EmployerReadiness from './pages/EmployerReadiness';
+import Handoffs from './pages/Handoffs';
 import Opportunities from './pages/Opportunities';
 import Governance from './pages/Governance';
 import Aggregates from './pages/Aggregates';
@@ -49,6 +50,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['worker']}>
                 <Consents />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/handoffs"
+            element={
+              <ProtectedRoute roles={['worker', 'navigator', 'hubCoordinator', 'supervisor', 'mentor']}>
+                <Handoffs />
               </ProtectedRoute>
             }
           />

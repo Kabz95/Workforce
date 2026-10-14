@@ -555,3 +555,137 @@ describe('national aggregate reads (B4)', () => {
     assert.equal(own.exists, true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 2 slice scenarios
+// ---------------------------------------------------------------------------
+
+describe('supervision sessions (Phase 2)', () => {
+  async function seedSession() {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('supervisionSessions/sess-1').set({
+        ownerId: 'worker-1', supervisorId: 'worker-2', tenantId: HUB,
+        sharedWith: [], notes: 'n', date: new Date(),
+      });
+      await db.doc('supervisionSessions/sess-shared').set({
+        ownerId: 'worker-1', supervisorId: 'worker-2', tenantId: HUB,
+        sharedWith: ['worker-2'], notes: 'n', date: new Date(),
+      });
+    });
+  }
+
+  it('owner creates / reads / updates / deletes their own session', async () => {
+    const db = worker1().firestore();
+    const ref = await db.collection('supervisionSessions').add({
+      ownerId: 'worker-1', supervisorId: 'worker-2', tenantId: HUB,
+      sharedWith: [], notes: 'n', date: new Date(),
+    });
+    assert.ok(ref.id);
+    const snap = await ref.get();
+    assert.equal(snap.exists, true);
+    await ref.update({ notes: 'updated' });
+    await ref.delete();
+  });
+
+  it('supervisorId alone confers NO read — only sharedWith does', async () => {
+    await seedSession();
+    // worker-2 IS the supervisorId on sess-1 but is NOT in sharedWith.
+    await assert.rejects(worker2().firestore().doc('supervisionSessions/sess-1').get());
+    // On sess-shared, worker-2 is in sharedWith (via a live consent) — reads.
+    const shared = await worker2().firestore().doc('supervisionSessions/sess-shared').get();
+    assert.equal(shared.exists, true);
+  });
+
+  it('non-shared, non-owner cannot read a supervision session', async () => {
+    await seedSession();
+    const outsider = ctx('worker-3', { roles: ['worker'], tenantId: HUB });
+    await assert.rejects(outsider.firestore().doc('supervisionSessions/sess-1').get());
+  });
+
+  it('client cannot create a session pre-shared, and owner cannot change sharedWith', async () => {
+    const db = worker1().firestore();
+    await assert.rejects(
+      db.collection('supervisionSessions').add({
+        ownerId: 'worker-1', supervisorId: 'worker-2', tenantId: HUB,
+        sharedWith: ['worker-2'], notes: 'n', date: new Date(),
+      }),
+    );
+    await seedSession();
+    await assert.rejects(
+      db.doc('supervisionSessions/sess-1').update({ sharedWith: ['worker-2'] }),
+    );
+    // A legitimate field update still works.
+    await db.doc('supervisionSessions/sess-1').update({ notes: 'ok' });
+  });
+});
+
+describe('persons creation (Phase 2)', () => {
+  it('owner with claims creates their own persons doc in their tenant', async () => {
+    const ref = worker1().firestore().doc('persons/worker-1');
+    await ref.set({ displayName: 'W1', email: 'w1@example.test', tenantId: HUB });
+    const snap = await ref.get();
+    assert.equal(snap.exists, true);
+  });
+
+  it('claim-less users CANNOT create a persons doc directly (the server callable is the only path)', async () => {
+    const noClaims = testEnv.authenticatedContext('noclaims-person', {});
+    await assert.rejects(
+      noClaims.firestore().doc('persons/noclaims-person').set({
+        displayName: 'N', email: 'n@example.test', tenantId: 'demo-hub',
+      }),
+    );
+  });
+
+  it('one user cannot create another person’s doc', async () => {
+    await assert.rejects(
+      worker1().firestore().doc('persons/worker-2').set({
+        displayName: 'Forged', email: 'f@example.test', tenantId: HUB,
+      }),
+    );
+  });
+
+  it('owner cannot change their persons tenantId', async () => {
+    const ref = worker1().firestore().doc('persons/worker-1');
+    await ref.set({ displayName: 'W1', email: 'w1@example.test', tenantId: HUB });
+    await assert.rejects(ref.update({ tenantId: OTHER_HUB }));
+  });
+});
+
+describe('consented sharing via sharedWith (Phase 2)', () => {
+  it('a grantee in sharedWith reads the shared doc; a non-grantee cannot', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc('pathwaySteps/step-shared').set({
+        ownerId: 'worker-1', tenantId: HUB, sharedWith: ['worker-2'],
+        type: 'navigation', title: 't', status: 'in-progress',
+      });
+    });
+    const shared = await worker2().firestore().doc('pathwaySteps/step-shared').get();
+    assert.equal(shared.exists, true);
+    const outsider = ctx('worker-3', { roles: ['worker'], tenantId: HUB });
+    await assert.rejects(outsider.firestore().doc('pathwaySteps/step-shared').get());
+  });
+});
+
+describe('handoff slice: coordinator offers, navigator accepts (Phase 2)', () => {
+  const navigator = () => ctx('nav-1', { roles: ['navigator'], tenantId: HUB });
+
+  it('coordinator offers a handoff to a navigator; navigator accepts; worker reads it', async () => {
+    const ref = await coordinator().firestore().collection('handoffs').add({
+      workerId: 'worker-1', senderId: 'coord-1', senderRole: 'hubCoordinator',
+      recipientId: 'nav-1', recipientRole: 'navigator', purpose: 'wayfinding support',
+      payloadSummary: 'first-contact navigation', tenantId: HUB, status: 'offered',
+    });
+    assert.ok(ref.id);
+    await navigator().firestore().doc(`handoffs/${ref.id}`).update({ status: 'accepted' });
+    const asWorker = await worker1().firestore().doc(`handoffs/${ref.id}`).get();
+    assert.equal(asWorker.exists, true);
+    assert.equal(asWorker.data().status, 'accepted');
+  });
+
+  it('navigator lists only own-tenant handoffs (cross-tenant list denied)', async () => {
+    await assert.rejects(
+      navigator().firestore().collection('handoffs').where('tenantId', '==', OTHER_HUB).get(),
+    );
+  });
+});

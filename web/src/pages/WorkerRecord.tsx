@@ -5,8 +5,10 @@ import {
   createWorker,
   deleteForm,
   deleteWorker,
+  getDeletionRequest,
   getMyWorker,
   listMyForms,
+  processDeletion,
   requestMyDeletion,
   requestMyExport,
   updateForm,
@@ -147,7 +149,7 @@ export default function WorkerRecord() {
 
   const deleteMyData = async () => {
     if (!window.confirm(
-      'Delete ALL of your data? Your records are deleted and shared records are anonymised. This cannot be undone.',
+      'Delete ALL of your data? Your records are deleted and shared records are anonymised. This cannot be undone. Export your data first if you want a copy.',
     )) return;
     const typed = window.prompt('Type DELETE to confirm.');
     if (typed !== 'DELETE') {
@@ -155,14 +157,47 @@ export default function WorkerRecord() {
       return;
     }
     try {
-      await requestMyDeletion({
+      // Job-based deletion: request the job, then advance it pass by
+      // pass until it is done. If the window ends first, the hourly
+      // sweeper finishes the job — the worker can sign out.
+      const job = await requestMyDeletion({
         actingGrantId: actingGrant?.id ?? null,
         actingRole,
         purpose: 'delete my data',
       });
-      setWorker(null);
-      setForms([]);
-      setNotice('Your data has been deleted.');
+      setNotice(`Deletion started (job ${job.requestId}). Processing…`);
+      let attempts = 0;
+      while (attempts < 30) {
+        attempts += 1;
+        const pass = await processDeletion(job.requestId, {
+          actingGrantId: actingGrant?.id ?? null,
+          actingRole,
+          purpose: 'delete my data',
+        });
+        if (pass.status === 'done') {
+          setWorker(null);
+          setForms([]);
+          setNotice(
+            `Your data has been deleted (${pass.deleted} records deleted, ${pass.anonymised} shared records anonymised).` +
+            (pass.exportError ? ' Note: the automatic pre-deletion export failed — use Export first next time to keep a copy.' : ''),
+          );
+          return;
+        }
+        setNotice(`Deletion in progress… ${pass.processed} records processed.`);
+        await new Promise((r) => setTimeout(r, 1000));
+      }
+      // Window ended: check the job once more, then hand off to the sweeper.
+      const current = await getDeletionRequest(job.requestId);
+      if (current?.status === 'done') {
+        setWorker(null);
+        setForms([]);
+        setNotice('Your data has been deleted.');
+      } else {
+        setNotice(
+          'Deletion continues in the background — the system finishes it even if you sign out. ' +
+          'Your records are being removed; shared records are being anonymised.',
+        );
+      }
     } catch (err) {
       setError(err);
     }

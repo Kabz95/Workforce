@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import {
   declareConflict,
@@ -128,19 +129,36 @@ export default function MyGrants() {
               <tr><th>Role</th><th>Scope</th><th>Status</th><th>Expires</th><th>Basis</th></tr>
             </thead>
             <tbody>
-              {grants.map((g) => (
-                <tr key={g.id}>
-                  <td>{ROLE_LABELS[g.role]}</td>
-                  <td>{g.scopeType}:{g.scopeId}</td>
-                  <td><span className="pill">{g.status}</span></td>
-                  <td>{formatTimestampOrMs(g.validUntil)}</td>
-                  <td>{g.basis}</td>
-                </tr>
-              ))}
+              {grants.map((g) => {
+                const untilMs = toMillis(g.validUntil);
+                const daysLeft = untilMs === null ? null : Math.ceil((untilMs - Date.now()) / (24 * 60 * 60 * 1000));
+                const expiringSoon = g.status === 'active' && daysLeft !== null && daysLeft <= 7 && daysLeft >= 0;
+                return (
+                  <tr key={g.id}>
+                    <td>{ROLE_LABELS[g.role]}</td>
+                    <td>{g.scopeType}:{g.scopeId}</td>
+                    <td><span className="pill">{g.status}</span></td>
+                    <td>
+                      {formatTimestampOrMs(g.validUntil)}
+                      {expiringSoon && (
+                        <span className="pill warning">
+                          expires in {daysLeft} day{daysLeft === 1 ? '' : 's'}
+                        </span>
+                      )}
+                    </td>
+                    <td>{g.basis}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
         <button type="button" onClick={() => void refreshGrants()}>Refresh grants</button>
+        <p className="muted">
+          See <Link to="/audit">My audit log</Link> for every action taken
+          under these grants, and <Link to="/consents">Consents</Link> for
+          the access you have granted to others.
+        </p>
       </section>
 
       <section className="card">
