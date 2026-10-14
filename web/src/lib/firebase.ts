@@ -27,7 +27,10 @@ const firebaseConfig = {
 const app: FirebaseApp = initializeApp(firebaseConfig);
 const auth: Auth = getAuth(app);
 const db: Firestore = getFirestore(app);
-const functions: Functions = getFunctions(app);
+// Functions live in northamerica-northeast1 (Montréal). The region MUST
+// be pinned: an unpinned getFunctions(app) targets us-central1 and the
+// callables would 404 / hit the wrong region's copies.
+const functions: Functions = getFunctions(app, 'northamerica-northeast1');
 
 // No Firebase Analytics anywhere in this app (spec §3.4, anti-surveillance).
 

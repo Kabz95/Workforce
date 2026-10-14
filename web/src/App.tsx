@@ -12,6 +12,7 @@ import Opportunities from './pages/Opportunities';
 import Governance from './pages/Governance';
 import Aggregates from './pages/Aggregates';
 import AuditLog from './pages/AuditLog';
+import MyGrants from './pages/MyGrants';
 
 export default function App() {
   return (
@@ -54,7 +55,7 @@ export default function App() {
           <Route
             path="/readiness"
             element={
-              <ProtectedRoute roles={['employer', 'hubAdmin']}>
+              <ProtectedRoute roles={['employer', 'hubCoordinator']}>
                 <EmployerReadiness />
               </ProtectedRoute>
             }
@@ -78,7 +79,7 @@ export default function App() {
           <Route
             path="/aggregates"
             element={
-              <ProtectedRoute roles={['backboneAnalyst', 'governance']}>
+              <ProtectedRoute roles={['analyst', 'steeringCircle', 'council']}>
                 <Aggregates />
               </ProtectedRoute>
             }
@@ -88,6 +89,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <AuditLog />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/grants"
+            element={
+              <ProtectedRoute>
+                <MyGrants />
               </ProtectedRoute>
             }
           />

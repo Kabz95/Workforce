@@ -1,15 +1,137 @@
 import type { Timestamp } from 'firebase/firestore';
 
-/** Role strings from Auth custom claims (spec §3.3). */
+/**
+ * Canonical roles (Phase 0 contract, frozen 2026-10-13).
+ * 13 Network roles. Clinical consultant and PSC hold NO account by
+ * default and therefore have no role here.
+ */
 export type Role =
   | 'worker'
-  | 'navigator'
+  | 'mentor'
   | 'supervisor'
-  | 'employer'
+  | 'navigator'
+  | 'facilitator'
+  | 'hubCoordinator'
+  | 'privacyLead'
+  | 'steeringCircle'
+  | 'council'
+  | 'backboneLead'
+  | 'analyst'
+  | 'researcher'
+  | 'employer';
+
+/** Operational capacity, NOT a business role. Never grants data access. */
+export type SystemRole = 'systemAdmin';
+
+export type AnyRole = Role | SystemRole;
+
+/** Legacy role names from the v0.1 single-role claims. */
+export type LegacyRole =
   | 'hubAdmin'
   | 'governance'
   | 'backboneAnalyst'
-  | 'systemAdmin';
+  | 'systemAdmin'
+  | 'worker'
+  | 'navigator'
+  | 'supervisor'
+  | 'employer';
+
+/** Migration map (brief §2b). Governance splits by scope; the admin
+ *  claims script asks which scope the record belongs to. */
+export const LEGACY_ROLE_MAP: Record<string, string> = {
+  hubAdmin: 'hubCoordinator',
+  governance: 'steeringCircle', // or 'council' — resolved by scope at migration
+  backboneAnalyst: 'analyst',
+  systemAdmin: 'systemAdmin', // operational-only, never a data role
+  worker: 'worker',
+  navigator: 'navigator',
+  supervisor: 'supervisor',
+  employer: 'employer',
+};
+
+/** A role string is canonical if it is one of the 13 or systemAdmin. */
+export function isCanonicalRole(value: string): value is AnyRole {
+  return (
+    value === 'systemAdmin' ||
+    [
+      'worker', 'mentor', 'supervisor', 'navigator', 'facilitator',
+      'hubCoordinator', 'privacyLead', 'steeringCircle', 'council',
+      'backboneLead', 'analyst', 'researcher', 'employer',
+    ].includes(value)
+  );
+}
+
+/** Map a legacy claim role to its canonical replacement. */
+export function canonicalRole(value: string): AnyRole | null {
+  if (isCanonicalRole(value)) return value;
+  const mapped = LEGACY_ROLE_MAP[value];
+  return mapped && isCanonicalRole(mapped) ? mapped : null;
+}
+
+/** Human-readable role labels for UI. */
+export const ROLE_LABELS: Record<AnyRole, string> = {
+  worker: 'Peer Worker',
+  mentor: 'Mentor',
+  supervisor: 'Peer-Practice Supervisor',
+  navigator: 'Navigator',
+  facilitator: 'Facilitator',
+  hubCoordinator: 'Hub Coordinator',
+  privacyLead: 'Privacy Lead',
+  steeringCircle: 'Steering Circle Member',
+  council: 'National Council Member',
+  backboneLead: 'Backbone Lead',
+  analyst: 'Workforce-Intelligence Analyst',
+  researcher: 'Research Unit Member',
+  employer: 'Employer',
+  systemAdmin: 'System Administrator (operational)',
+};
+
+/** Least-privileged default order — matches the Kernel catalogue ranks
+ *  (kernel.ts leastPrivilegeRank): worker first, systemAdmin last. */
+export const ROLE_DEFAULT_ORDER: AnyRole[] = [
+  'worker',
+  'mentor',
+  'facilitator',
+  'navigator',
+  'supervisor',
+  'researcher',
+  'analyst',
+  'privacyLead',
+  'employer',
+  'hubCoordinator',
+  'steeringCircle',
+  'backboneLead',
+  'council',
+  'systemAdmin',
+];
+
+/** Grant scope types (Kernel ScopeType). 'network' = national scope. */
+export type ScopeType = 'self' | 'hub' | 'network' | 'employer';
+
+/**
+ * A Firestore Timestamp OR an epoch-ms number. The Kernel's pure core
+ * types validity as ms; Firestore documents carry Timestamps; the
+ * getMyGrants callable returns ms (converted server-side). Accept both.
+ */
+export type TimestampOrMs = Timestamp | number | null | undefined;
+
+/** Normalize a Timestamp-or-ms value to epoch ms (null when absent). */
+export function toMillis(value: TimestampOrMs): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return value;
+  try {
+    return value.toMillis();
+  } catch {
+    return null;
+  }
+}
+
+/** Format a Timestamp-or-ms value as a date string. */
+export function formatTimestampOrMs(value: TimestampOrMs): string {
+  const ms = toMillis(value);
+  if (ms === null) return '—';
+  return new Date(ms).toLocaleDateString();
+}
 
 export type WithId<T> = T & { id: string };
 
@@ -25,6 +147,80 @@ export interface UserProfile {
   tenantId: string;
   roles: Role[];
   createdAt: Timestamp;
+}
+
+/** A person in the Network. One account per person. */
+export interface Person {
+  displayName: string;
+  email: string;
+  tenantId: string;
+  status: 'active' | 'suspended';
+  createdAt: Timestamp;
+}
+
+/** A scoped grant of one role to one person. The unit of authorization.
+ *  Shape matches the Kernel (kernel.ts RoleGrant): validity is
+ *  validFrom/validUntil; Firestore docs carry Timestamps, the
+ *  getMyGrants callable returns epoch ms. Use toMillis() to read. */
+export interface RoleGrant {
+  granteeId: string;
+  role: AnyRole;
+  scopeType: ScopeType;
+  scopeId: string;
+  tenantId: string;
+  basis: string;
+  grantedBy: string;
+  status: 'proposed' | 'active' | 'suspended' | 'expired' | 'revoked';
+  validFrom: TimestampOrMs;
+  validUntil: TimestampOrMs;
+  needsReview?: boolean;
+  reviewReason?: string | null;
+  createdAt?: TimestampOrMs;
+  updatedAt?: TimestampOrMs;
+}
+
+export interface Membership {
+  personId: string;
+  circleId: string;
+  circleKind: 'hub' | 'steering' | 'council' | 'communityOfPractice';
+  tenantId: string;
+  status: 'active' | 'inactive';
+  joinedAt: Timestamp;
+}
+
+export interface Assignment {
+  workerId: string;
+  holderId: string;
+  role: 'mentor' | 'navigator' | 'supervisor' | 'facilitator';
+  tenantId: string;
+  status: 'active' | 'closed';
+  startedAt: Timestamp;
+  endedAt: Timestamp | null;
+}
+
+/** A conflict declaration (gateway declareConflict shape). */
+export interface ConflictDeclaration {
+  declarerId: string;
+  grantId: string | null;
+  description: string;
+  mitigation: string | null;
+  tenantId: string;
+  status: 'open' | 'acknowledged' | 'resolved';
+  createdAt: Timestamp;
+}
+
+export interface Handoff {
+  workerId: string;
+  senderId: string;
+  senderRole: AnyRole;
+  recipientId: string;
+  recipientRole: AnyRole;
+  purpose: string;
+  payloadSummary: string;
+  tenantId: string;
+  status: 'draft' | 'offered' | 'accepted' | 'declined' | 'closed';
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
 }
 
 export interface Worker {
@@ -163,14 +359,28 @@ export interface Consent {
   purpose: string;
 }
 
-export interface AuditLog {
+/**
+ * Server-authored access event (the audit record). Clients NEVER write
+ * these; they are written by Cloud Functions in the same transaction
+ * as the business change they record.
+ */
+export interface AccessEvent {
   subjectId: string;
   actorId: string;
   action: string;
   resourceType: string;
   resourceId: string;
+  actingRole: string;
+  actingGrantId: string | null;
+  purpose: string;
+  correlationId: string;
+  result: 'allowed' | 'denied';
+  detail?: Record<string, unknown>;
   createdAt: Timestamp;
 }
+
+/** Backwards-compatible alias for the audit page. */
+export type AuditLog = AccessEvent;
 
 export interface DeletionRequest {
   ownerId: string;

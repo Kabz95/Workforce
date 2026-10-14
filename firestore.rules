@@ -2,236 +2,416 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
+    // ============================================================
+    // Role Kernel — Firestore rules (Phase 1).
+    //
+    // These rules are the COARSE gate: claims-based role membership,
+    // tenant scoping on every read and write, ownership, and
+    // sharedWith immutability. The FINE gate is the policy gateway
+    // in Cloud Functions, which verifies the caller's LIVE role grant
+    // (server lookup) and runs the six-part authorization decision.
+    // Rules cannot query roleGrants; Functions can. Both gates must
+    // pass for consequential commands.
+    //
+    // Invariants:
+    // - Every write carries tenantId == the caller's claim tenant.
+    // - Clients NEVER modify sharedWith (server Functions only).
+    // - Clients NEVER write accessEvents / aggregates /
+    //   aggregateReleases / roleGrants / idempotencyKeys /
+    //   deletionRequests (server-authored, immutable).
+    // - Claims carry roles[] (canonical 13 + systemAdmin).
+    // - systemAdmin is operational-only: it grants NO data access.
+    // ============================================================
+
     function signedIn() { return request.auth != null; }
-    function isOwner(doc) {
-      return signedIn() && request.auth.uid == doc.ownerId;
-    }
-    function sameTenant(doc) {
-      return signedIn()
-        && request.auth.token.tenantId == doc.tenantId;
-    }
-    function inSharedWith(doc) {
-      return signedIn() && request.auth.uid in doc.get('sharedWith', []);
-    }
+    function uid() { return request.auth.uid; }
+    function claimTenant() { return request.auth.token.tenantId; }
+    function claimRoles() { return request.auth.token.roles; }
     function hasRole(role) {
-      return signedIn() && request.auth.token.role == role;
+      return signedIn() && claimRoles() != null && role in claimRoles();
     }
-    function isGovernance() { return hasRole('governance'); }
-    function isHubAdmin() { return hasRole('hubAdmin'); }
+    function hasAnyRole(roles) {
+      return signedIn() && claimRoles() != null && claimRoles().hasAny(roles);
+    }
+    // Tenant of the incoming document must equal the caller's claim tenant.
+    function incomingTenantMatches(doc) {
+      return signedIn() && claimTenant() != null && doc.tenantId == claimTenant();
+    }
+    // Tenant of the stored document must equal the caller's claim tenant.
+    function storedTenantMatches(doc) {
+      return signedIn() && claimTenant() != null && doc.tenantId == claimTenant();
+    }
+    function isOwner(doc) {
+      return signedIn() && uid() == doc.ownerId;
+    }
+    function isSharedWith(doc) {
+      return signedIn() && uid() in doc.get('sharedWith', []);
+    }
+    // Owner / tenant / sharedWith are immutable on client updates.
+    function immutableCoreUnchanged() {
+      return request.resource.data.ownerId == resource.data.ownerId
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.get('sharedWith', []) == resource.data.get('sharedWith', []);
+    }
+    // Only the listed keys may change on this update.
+    function onlyKeysChange(keys) {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly(keys);
+    }
+    function isHubCoordinator() { return hasRole('hubCoordinator'); }
+    function isPrivacyLead() { return hasRole('privacyLead'); }
+    function canAuthorise() {
+      return hasAnyRole(['hubCoordinator', 'privacyLead', 'council', 'backboneLead']);
+    }
 
     // ---- Tenants (hubs) ----
+    // Tenant docs carry no tenantId field — the document ID IS the tenant.
+    // Creating a tenant doc grants no data access: every other rule keys
+    // on the caller's CLAIM tenant, not on this collection.
     match /tenants/{tenantId} {
       allow get, list: if signedIn();
       allow create: if signedIn();
-      allow update: if isHubAdmin() && request.auth.token.tenantId == tenantId;
+      allow update: if isHubCoordinator() && claimTenant() == tenantId;
       allow delete: if false;
     }
 
-    // ---- Users ----
+    // ---- Users (profile docs) ----
+    // Clients may change displayName/email only — never roles/tenantId.
+    // Create: the self-signup bootstrap allows a claim-less user to
+    // create their own doc in demo-hub with the worker role only; once
+    // claims exist, the claim tenant governs. No other collection
+    // admits claim-less writes.
     match /users/{userId} {
       allow get: if signedIn()
-        && (request.auth.uid == userId
-          || (isHubAdmin() && request.auth.token.tenantId == resource.data.tenantId));
+        && (uid() == userId
+          || (isHubCoordinator() && storedTenantMatches(resource.data)));
       allow list: if false;
-      allow create: if signedIn() && request.auth.uid == userId;
-      allow update: if signedIn() && request.auth.uid == userId
-        && request.resource.data.tenantId == resource.data.tenantId;
+      allow create: if signedIn() && uid() == userId
+        && request.resource.data.roles == ['worker']
+        && (incomingTenantMatches(request.resource.data)
+          || (claimTenant() == null
+            && request.resource.data.tenantId == 'demo-hub'));
+      allow update: if signedIn() && uid() == userId
+        && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged()
+        && request.resource.data.roles == resource.data.roles
+        && onlyKeysChange(['displayName', 'email']);
       allow delete: if false;
     }
 
-    // ---- Worker-owned records: owner only, no bulk listing ----
-    // Client updates may never change sharedWith (only the grantAccess
-    // Function may, via Admin SDK), ownerId, or tenantId.
-    match /workers/{workerId} {
-      allow get: if isOwner(resource.data) && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
-      allow update, delete: if isOwner(resource.data) && sameTenant(resource.data)
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-    }
-    match /firstContactForms/{formId} {
-      allow get: if (isOwner(resource.data) || inSharedWith(resource.data)) && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.get('sharedWith', []) == [];
-      allow update: if isOwner(resource.data) && sameTenant(resource.data)
-        && request.resource.data.sharedWith == resource.data.sharedWith
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if isOwner(resource.data) && sameTenant(resource.data);
-    }
-    match /pathwaySteps/{stepId} {
-      allow get: if (isOwner(resource.data) || inSharedWith(resource.data)) && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.get('sharedWith', []) == [];
-      allow update: if isOwner(resource.data) && sameTenant(resource.data)
-        && request.resource.data.sharedWith == resource.data.sharedWith
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if isOwner(resource.data) && sameTenant(resource.data);
-    }
-    match /certificationNavigation/{navId} {
-      allow get: if (isOwner(resource.data) || inSharedWith(resource.data)) && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid
-        && request.resource.data.get('sharedWith', []) == [];
-      allow update: if isOwner(resource.data) && sameTenant(resource.data)
-        && request.resource.data.sharedWith == resource.data.sharedWith
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if isOwner(resource.data) && sameTenant(resource.data);
-    }
-    match /evaluationSubmissions/{subId} {
-      allow get: if isOwner(resource.data) && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
-      allow update: if isOwner(resource.data) && sameTenant(resource.data)
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if isOwner(resource.data) && sameTenant(resource.data);
-    }
-
-    // ---- Opportunities: public within tenant; applications owner + posting employer ----
-    match /opportunities/{oppId} {
-      allow get, list: if signedIn() && request.auth.token.tenantId == resource.data.tenantId;
-      allow create: if hasRole('employer') && request.resource.data.employerId == request.auth.uid;
-      allow update, delete: if hasRole('employer') && resource.data.employerId == request.auth.uid;
-    }
-    match /opportunityApplications/{appId} {
-      allow get: if (isOwner(resource.data)
-        || (hasRole('employer') && resource.data.employerId == request.auth.uid))
-        && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
-      allow update: if (isOwner(resource.data)
-        || (hasRole('employer') && resource.data.employerId == request.auth.uid))
-        && sameTenant(resource.data)
-        && request.resource.data.sharedWith == resource.data.sharedWith
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.employerId == resource.data.employerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if isOwner(resource.data) && sameTenant(resource.data);
-    }
-
-    // ---- Mentorships: participants only ----
-    match /mentorships/{mentorshipId} {
+    // ---- Persons (one per account) ----
+    match /persons/{personId} {
       allow get: if signedIn()
-        && request.auth.uid in resource.data.participantIds
-        && sameTenant(resource.data);
+        && (uid() == personId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
       allow list: if false;
-      allow create: if signedIn() && request.auth.uid in request.resource.data.participantIds;
-      allow update: if signedIn()
-        && request.auth.uid in resource.data.participantIds
-        && sameTenant(resource.data)
-        && request.resource.data.participantIds == resource.data.participantIds
-        && request.resource.data.sharedWith == resource.data.sharedWith
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if signedIn()
-        && request.auth.uid in resource.data.participantIds
-        && sameTenant(resource.data);
+      allow create: if signedIn() && uid() == personId
+        && incomingTenantMatches(request.resource.data);
+      allow update: if signedIn() && uid() == personId
+        && storedTenantMatches(resource.data)
+        && request.resource.data.tenantId == resource.data.tenantId
+        && onlyKeysChange(['displayName', 'email']);
+      allow delete: if false;
     }
 
-    // ---- Supervision: worker + supervisor via sharedWith ----
-    match /supervisionSessions/{sessionId} {
-      allow get: if (isOwner(resource.data) || inSharedWith(resource.data)) && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid
+    // ---- Role grants (server-written; clients read own + authorisers) ----
+    match /roleGrants/{grantId} {
+      allow get: if signedIn()
+        && (uid() == resource.data.granteeId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
+      allow list: if signedIn()
+        && (uid() == resource.data.granteeId || canAuthorise());
+      allow create, update, delete: if false;
+    }
+
+    // ---- Memberships (server-written) ----
+    match /memberships/{membershipId} {
+      allow get: if signedIn()
+        && (uid() == resource.data.personId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
+      allow list: if signedIn() && (uid() == resource.data.personId || canAuthorise());
+      allow create, update, delete: if false;
+    }
+
+    // ---- Assignments (server-written) ----
+    match /assignments/{assignmentId} {
+      allow get: if signedIn()
+        && (uid() == resource.data.workerId
+          || uid() == resource.data.holderId
+          || (isHubCoordinator() && storedTenantMatches(resource.data)));
+      allow list: if signedIn()
+        && (uid() == resource.data.workerId
+          || uid() == resource.data.holderId || isHubCoordinator());
+      allow create, update, delete: if false;
+    }
+
+    // ---- Conflict declarations ----
+    match /conflictDeclarations/{conflictId} {
+      allow get: if signedIn()
+        && (uid() == resource.data.declarerId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
+      allow list: if signedIn()
+        && (uid() == resource.data.declarerId || canAuthorise());
+      allow create: if signedIn()
+        && uid() == request.resource.data.declarerId
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.status == 'open';
+      allow update: if signedIn() && canAuthorise()
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && onlyKeysChange(['status']);
+      allow delete: if false;
+    }
+
+    // ---- Handoffs ----
+    match /handoffs/{handoffId} {
+      allow get: if signedIn()
+        && (uid() == resource.data.workerId
+          || uid() == resource.data.senderId
+          || uid() == resource.data.recipientId);
+      allow list: if signedIn()
+        && (uid() == resource.data.workerId
+          || uid() == resource.data.senderId
+          || uid() == resource.data.recipientId);
+      allow create: if signedIn()
+        && uid() == request.resource.data.senderId
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.status == 'offered';
+      allow update: if signedIn()
+        && uid() == resource.data.recipientId
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && onlyKeysChange(['status']);
+      allow delete: if false;
+    }
+
+    // ---- Worker records (owner only — no hub view of worker records) ----
+    match /workers/{workerId} {
+      allow get, list: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data)
         && request.resource.data.get('sharedWith', []) == [];
-      allow update: if isOwner(resource.data) && sameTenant(resource.data)
-        && request.resource.data.sharedWith == resource.data.sharedWith
-        && request.resource.data.ownerId == resource.data.ownerId
-        && request.resource.data.tenantId == resource.data.tenantId;
-      allow delete: if isOwner(resource.data) && sameTenant(resource.data);
+      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+    }
+
+    // ---- First-contact forms (owner or consented grantee) ----
+    match /firstContactForms/{formId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.get('sharedWith', []) == [];
+      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+    }
+
+    // ---- Pathway steps ----
+    match /pathwaySteps/{stepId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.get('sharedWith', []) == [];
+      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+    }
+
+    // ---- Certification navigation ----
+    match /certificationNavigation/{navId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.get('sharedWith', []) == [];
+      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+    }
+
+    // ---- Consents (consent grants) ----
+    match /consents/{consentId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (uid() == resource.data.granterId || uid() == resource.data.granteeId);
+      allow list: if signedIn()
+        && (uid() == resource.data.granterId || uid() == resource.data.granteeId);
+      allow create: if signedIn()
+        && uid() == request.resource.data.granterId
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.resourceType in [
+          'firstContactForms', 'pathwaySteps', 'certificationNavigation']
+        && request.resource.data.scope in [
+          'read:firstContactForms', 'read:pathwaySteps', 'read:certificationNavigation',
+          'read:supervisionSessions']
+        && request.resource.data.revokedAt == null
+        && request.resource.data.expiresAt > request.time;
+      // Only the granter may revoke, and only revokedAt may change.
+      allow update: if signedIn()
+        && uid() == resource.data.granterId
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && onlyKeysChange(['revokedAt']);
+      allow delete: if false;
+    }
+
+    // ---- Opportunities (tenant-visible) ----
+    match /opportunities/{opportunityId} {
+      allow get, list: if signedIn() && storedTenantMatches(resource.data);
+      allow create: if signedIn()
+        && hasAnyRole(['employer', 'hubCoordinator'])
+        && incomingTenantMatches(request.resource.data)
+        && uid() == request.resource.data.employerId;
+      allow update: if signedIn()
+        && (uid() == resource.data.employerId || isHubCoordinator())
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data);
+      allow delete: if signedIn()
+        && (uid() == resource.data.employerId || isHubCoordinator())
+        && storedTenantMatches(resource.data);
+    }
+
+    // ---- Opportunity applications ----
+    match /opportunityApplications/{applicationId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || uid() == resource.data.employerId);
+      allow list: if signedIn() && (isOwner(resource.data) || uid() == resource.data.employerId);
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.get('sharedWith', []) == [];
+      allow update: if signedIn() && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && (
+          // Applicant may withdraw only.
+          (isOwner(resource.data) && onlyKeysChange(['status'])
+            && request.resource.data.status == 'withdrawn')
+          // Employer may move the decision forward.
+          || (uid() == resource.data.employerId && onlyKeysChange(['status'])
+            && request.resource.data.status in ['reviewed', 'accepted', 'declined'])
+        );
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
     // ---- Employers ----
     match /employers/{employerId} {
-      allow get: if signedIn()
-        && (request.auth.uid == resource.data.ownerId
-          || (isHubAdmin() && sameTenant(resource.data)));
-      allow list: if false;
-      allow create: if hasRole('employer') && request.resource.data.ownerId == request.auth.uid;
-      allow update: if signedIn() && request.auth.uid == resource.data.ownerId;
-      allow delete: if false;
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || canAuthorise());
+      allow list: if signedIn() && (isOwner(resource.data) || canAuthorise());
+      allow create: if signedIn() && hasRole('employer')
+        && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data);
+      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
+
+    // ---- Readiness assessments (immutable once submitted) ----
     match /readinessAssessments/{assessmentId} {
-      allow get: if signedIn()
-        && ((hasRole('employer') && resource.data.employerId == request.auth.uid)
-          || isGovernance())
-        && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if hasRole('employer') && request.resource.data.employerId == request.auth.uid;
-      allow update: if hasRole('employer') && resource.data.employerId == request.auth.uid;
-      allow delete: if false;
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (uid() == resource.data.employerId || canAuthorise());
+      allow list: if signedIn()
+        && (uid() == resource.data.employerId || canAuthorise());
+      allow create: if signedIn()
+        && uid() == request.resource.data.employerId
+        && incomingTenantMatches(request.resource.data);
+      allow update, delete: if false;
     }
 
-    // ---- Governance: decisions public within network; complaints complainant + governance ----
+    // ---- Governance decisions (published; governance roles write) ----
     match /governanceDecisions/{decisionId} {
-      allow get, list: if signedIn();
-      allow create, update: if isGovernance();
-      allow delete: if false;
+      allow get, list: if signedIn() && storedTenantMatches(resource.data);
+      allow create: if signedIn()
+        && hasAnyRole(['steeringCircle', 'council', 'hubCoordinator'])
+        && incomingTenantMatches(request.resource.data);
+      allow update: if signedIn()
+        && hasAnyRole(['steeringCircle', 'council', 'hubCoordinator'])
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data);
+      allow delete: if signedIn()
+        && hasAnyRole(['steeringCircle', 'council', 'hubCoordinator'])
+        && storedTenantMatches(resource.data);
     }
+
+    // ---- Complaints ----
     match /complaints/{complaintId} {
-      allow get: if signedIn()
-        && (request.auth.uid == resource.data.complainantId || isGovernance())
-        && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.complainantId == request.auth.uid;
-      allow update: if isGovernance() && sameTenant(resource.data);
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (uid() == resource.data.complainantId || canAuthorise());
+      allow list: if signedIn()
+        && (uid() == resource.data.complainantId || canAuthorise());
+      allow create: if signedIn()
+        && uid() == request.resource.data.complainantId
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.status == 'open';
+      allow update: if signedIn() && canAuthorise()
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && onlyKeysChange(['status']);
       allow delete: if false;
     }
 
-    // ---- Adaptation logs: hub members ----
+    // ---- Adaptation logs ----
     match /adaptationLogs/{logId} {
-      allow get, list: if signedIn() && request.auth.token.tenantId == resource.data.tenantId;
-      allow create: if signedIn() && request.resource.data.authorId == request.auth.uid;
-      allow update: if signedIn() && request.auth.uid == resource.data.authorId;
-      allow delete: if false;
+      allow get, list: if signedIn() && storedTenantMatches(resource.data);
+      allow create: if signedIn()
+        && hasAnyRole(['hubCoordinator', 'backboneLead', 'facilitator', 'analyst'])
+        && uid() == request.resource.data.authorId
+        && incomingTenantMatches(request.resource.data);
+      allow update: if signedIn()
+        && uid() == resource.data.authorId
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data);
+      allow delete: if signedIn()
+        && uid() == resource.data.authorId
+        && storedTenantMatches(resource.data);
     }
 
-    // ---- Aggregates: written by Functions only (Admin SDK), read by analysts/governance ----
-    match /aggregates/{aggId} {
-      allow get, list: if signedIn()
-        && request.auth.token.role in ['backboneAnalyst', 'governance'];
+    // ---- Evaluation submissions (owner only — raw data never flows up) ----
+    match /evaluationSubmissions/{submissionId} {
+      allow get, list: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+      allow create: if signedIn() && isOwner(request.resource.data)
+        && incomingTenantMatches(request.resource.data);
+      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
+    }
+
+    // ---- Aggregates (server-written; governance + analyst read) ----
+    match /aggregates/{aggregateId} {
+      allow get, list: if signedIn() && storedTenantMatches(resource.data)
+        && hasAnyRole(['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead']);
       allow create, update, delete: if false;
     }
 
-    // ---- Consents: granter + grantee can read; granter creates/revokes ----
-    // Create: grant must start live (revokedAt null, expiry in future).
-    // Update: granter may change ONLY revokedAt / revokeReason — a grant
-    // cannot be re-pointed at a different person or document after creation.
-    match /consents/{consentId} {
+    // ---- Aggregate releases (server-written) ----
+    match /aggregateReleases/{releaseId} {
+      allow get, list: if signedIn() && storedTenantMatches(resource.data)
+        && hasAnyRole(['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead']);
+      allow create, update, delete: if false;
+    }
+
+    // ---- Access events (server-authored; subject + privacy lead read) ----
+    match /accessEvents/{eventId} {
       allow get: if signedIn()
-        && (request.auth.uid == resource.data.granterId
-          || request.auth.uid == resource.data.granteeId)
-        && sameTenant(resource.data);
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.granterId == request.auth.uid
-        && request.resource.data.revokedAt == null
-        && request.resource.data.expiresAt > request.time;
-      allow update: if signedIn()
-        && request.auth.uid == resource.data.granterId
-        && sameTenant(resource.data)
-        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['revokedAt', 'revokeReason']);
-      allow delete: if false;
+        && (uid() == resource.data.subjectId
+          || (isPrivacyLead() && storedTenantMatches(resource.data)));
+      allow list: if signedIn()
+        && (uid() == resource.data.subjectId || isPrivacyLead());
+      allow create, update, delete: if false;
     }
 
-    // ---- Audit log: append-only; owner reads own entries ----
-    match /auditLogs/{logId} {
-      allow create: if signedIn();
-      allow update, delete: if false;
-      allow get: if signedIn() && request.auth.uid == resource.data.subjectId;
-      allow list: if false;
+    // ---- Idempotency keys (server only) ----
+    match /idempotencyKeys/{keyId} {
+      allow read, write: if false;
     }
 
-    // ---- Deletion requests: owner creates; Functions process ----
+    // ---- Deletion requests (server-written; owner reads) ----
     match /deletionRequests/{requestId} {
-      allow get: if signedIn() && request.auth.uid == resource.data.ownerId;
-      allow list: if false;
-      allow create: if signedIn() && request.resource.data.ownerId == request.auth.uid;
-      allow update, delete: if false;
+      allow get: if signedIn() && uid() == resource.data.ownerId;
+      allow list: if signedIn() && uid() == resource.data.ownerId;
+      allow create, update, delete: if false;
+    }
+
+    // ---- Deny everything else ----
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

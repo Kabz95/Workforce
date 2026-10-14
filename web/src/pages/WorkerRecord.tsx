@@ -16,7 +16,7 @@ import { formatTimestamp, type WithId, type FirstContactForm, type Worker } from
 import ErrorNotice from '../components/ErrorNotice';
 
 export default function WorkerRecord() {
-  const { user, tenantId } = useAuth();
+  const { user, tenantId, actingRole, actingGrant } = useAuth();
   const [worker, setWorker] = useState<WithId<Worker> | null>(null);
   const [forms, setForms] = useState<WithId<FirstContactForm>[]>([]);
   const [error, setError] = useState<unknown>(null);
@@ -133,7 +133,11 @@ export default function WorkerRecord() {
 
   const exportMyData = async () => {
     try {
-      const url = await requestMyExport();
+      const url = await requestMyExport({
+        actingGrantId: actingGrant?.id ?? null,
+        actingRole,
+        purpose: 'export my data',
+      });
       setNotice('Export ready — the download link is valid for 7 days.');
       window.open(url, '_blank', 'noopener');
     } catch (err) {
@@ -151,7 +155,11 @@ export default function WorkerRecord() {
       return;
     }
     try {
-      await requestMyDeletion();
+      await requestMyDeletion({
+        actingGrantId: actingGrant?.id ?? null,
+        actingRole,
+        purpose: 'delete my data',
+      });
       setWorker(null);
       setForms([]);
       setNotice('Your data has been deleted.');

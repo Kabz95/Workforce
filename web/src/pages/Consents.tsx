@@ -7,7 +7,7 @@ import ErrorNotice from '../components/ErrorNotice';
 const SCOPES = ['read:firstContactForms', 'read:pathwaySteps', 'read:certificationNavigation'];
 
 export default function Consents() {
-  const { user, tenantId } = useAuth();
+  const { user, tenantId, actingRole, actingGrant } = useAuth();
   const [consents, setConsents] = useState<WithId<Consent>[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [notice, setNotice] = useState('');
@@ -47,6 +47,10 @@ export default function Consents() {
         resourceId: resourceId.trim() || '',
         expiresAt,
         purpose,
+      }, {
+        actingGrantId: actingGrant?.id ?? null,
+        actingRole,
+        purpose,
       });
       setNotice('Grant created. It expires automatically — nothing here is open-ended.');
       setGranteeId('');
@@ -62,7 +66,7 @@ export default function Consents() {
     if (!user) return;
     if (!window.confirm('Revoke this grant? Access ends immediately.')) return;
     try {
-      await revokeConsent(c, user.uid);
+      await revokeConsent(c);
       setNotice('Grant revoked. Access ended immediately.');
       await load();
     } catch (err) {

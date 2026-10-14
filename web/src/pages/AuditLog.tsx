@@ -35,7 +35,7 @@ export default function AuditLog() {
           <p className="muted">No audit entries yet.</p>
         ) : (
           <table>
-            <thead><tr><th>When</th><th>Action</th><th>Resource</th><th>Actor</th></tr></thead>
+            <thead><tr><th>When</th><th>Action</th><th>Resource</th><th>Actor</th><th>Acting role</th><th>Purpose</th><th>Result</th></tr></thead>
             <tbody>
               {entries.map((e) => (
                 <tr key={e.id}>
@@ -43,6 +43,9 @@ export default function AuditLog() {
                   <td>{e.action}</td>
                   <td>{e.resourceType}/{e.resourceId}</td>
                   <td>{e.actorId}</td>
+                  <td>{e.actingRole}</td>
+                  <td>{e.purpose}</td>
+                  <td><span className="pill">{e.result}</span></td>
                 </tr>
               ))}
             </tbody>

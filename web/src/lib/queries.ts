@@ -14,17 +14,20 @@ import {
 import { httpsCallable } from 'firebase/functions';
 import { db, functions } from './firebase';
 import type {
-  AuditLog,
+  AccessEvent,
   CertificationNavigation,
   Complaint,
+  ConflictDeclaration,
   Consent,
   Employer,
   FirstContactForm,
   GovernanceDecision,
+  Handoff,
   Opportunity,
   OpportunityApplication,
   PathwayStep,
   ReadinessAssessment,
+  RoleGrant,
   Aggregate,
   WithId,
   Worker,
@@ -43,20 +46,34 @@ import type {
  *   live grant, the scope, and the caller's ownership of the target),
  *   and un-sharing only by the `onConsentRevoke` trigger / `expireConsents`.
  *   Security rules enforce this: client updates may not change `sharedWith`.
+ * - The client NEVER writes audit / access-event entries. Access events
+ *   are server-authored by Cloud Functions in the same transaction as
+ *   the business change they record.
+ * - Consequential commands send the caller's acting capacity
+ *   (actingGrantId + actingRole) so the server can verify the live
+ *   grant and stamp the access event. The server re-verifies; the
+ *   client-sent values are a hint, never authority.
+ * - Consequential commands carry a fresh idempotency key so a retried
+ *   tap never double-applies.
  */
+
+/** Acting-capacity context sent with consequential commands. */
+export interface ActingInput {
+  actingGrantId?: string | null;
+  actingRole?: string | null;
+  purpose?: string;
+}
+
+/** Fresh idempotency key for one command attempt. */
+export function newIdempotencyKey(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `key-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function toDoc<T extends DocumentData>(snap: QueryDocumentSnapshot): WithId<T> {
   return { id: snap.id, ...(snap.data() as T) };
-}
-
-/** Append an audit entry. Best-effort: failures are swallowed by callers. */
-export async function writeAuditEntry(
-  entry: Omit<AuditLog, 'createdAt'>,
-): Promise<void> {
-  await addDoc(collection(db, 'auditLogs'), {
-    ...entry,
-    createdAt: serverTimestamp(),
-  });
 }
 
 // --- Workers (owner only) ---
@@ -214,6 +231,10 @@ const SHAREABLE_COLLECTIONS: Record<string, string> = {
 const grantAccess = httpsCallable(functions, 'grantAccess');
 const requestExportFn = httpsCallable(functions, 'requestExport');
 const requestDeletionFn = httpsCallable(functions, 'requestDeletion');
+const requestRoleGrantFn = httpsCallable(functions, 'requestRoleGrant');
+const declareConflictFn = httpsCallable(functions, 'declareConflict');
+const createHandoffFn = httpsCallable(functions, 'createHandoff');
+const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
 
 export async function grantConsent(
   granterId: string,
@@ -226,6 +247,7 @@ export async function grantConsent(
     expiresAt: Date;
     purpose: string;
   },
+  acting?: ActingInput,
 ): Promise<string> {
   if (!SHAREABLE_COLLECTIONS[data.resourceType] || !data.resourceId) {
     throw new Error('Grants are per-document: a specific record ID is required.');
@@ -246,7 +268,13 @@ export async function grantConsent(
   // that touches sharedWith. If activation fails, roll back the grant
   // record so no dead grant lingers.
   try {
-    await grantAccess({ consentId: ref.id });
+    await grantAccess({
+      consentId: ref.id,
+      actingGrantId: acting?.actingGrantId ?? null,
+      actingRole: acting?.actingRole ?? null,
+      purpose: acting?.purpose ?? data.purpose,
+      idempotencyKey: newIdempotencyKey(),
+    });
   } catch (err) {
     await deleteDoc(ref);
     throw err;
@@ -256,29 +284,150 @@ export async function grantConsent(
 
 export async function revokeConsent(
   consent: WithId<Consent>,
-  actorId: string,
 ): Promise<void> {
   // Only the grant record changes. The onConsentRevoke trigger strips
-  // the grantee from the target's sharedWith and audits the revocation.
+  // the grantee from the target's sharedWith and writes the access
+  // event. The client never writes audit entries.
   await updateDoc(doc(db, 'consents', consent.id), { revokedAt: serverTimestamp() });
-  await writeAuditEntry({
-    subjectId: consent.granterId,
-    actorId,
-    action: 'consent-revoked',
-    resourceType: consent.resourceType,
-    resourceId: consent.resourceId,
-  });
 }
 
 /** Export all of the caller's own data (returns a 7-day download URL). */
-export async function requestMyExport(): Promise<string> {
-  const result = await requestExportFn({});
+export async function requestMyExport(acting?: ActingInput): Promise<string> {
+  const result = await requestExportFn({
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'export my data',
+    idempotencyKey: newIdempotencyKey(),
+  });
   return (result.data as { url: string }).url;
 }
 
 /** Delete all of the caller's own data (anonymises shared records). */
-export async function requestMyDeletion(): Promise<void> {
-  await requestDeletionFn({});
+export async function requestMyDeletion(acting?: ActingInput): Promise<void> {
+  await requestDeletionFn({
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'delete my data',
+    idempotencyKey: newIdempotencyKey(),
+  });
+}
+
+// --- Role grants, conflicts, handoffs (Role Kernel) ---
+
+/** Request a role grant (creates a 'proposed' grant for an authorizer).
+ *  Shape matches the gateway requestRoleGrant callable. */
+export async function requestRoleGrant(
+  data: {
+    role: string;
+    scopeType: string;
+    scopeId: string;
+    tenantId: string;
+    validUntil?: string;
+    justification?: string;
+  },
+  acting?: ActingInput,
+): Promise<void> {
+  await requestRoleGrantFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'request a role grant',
+    idempotencyKey: newIdempotencyKey(),
+  });
+}
+
+/** Declare a conflict of interest (gateway declareConflict shape). */
+export async function declareConflict(
+  data: { grantId?: string; description: string; mitigation?: string; tenantId: string },
+  acting?: ActingInput,
+): Promise<void> {
+  await declareConflictFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'declare a conflict',
+    idempotencyKey: newIdempotencyKey(),
+  });
+}
+
+/** Offer a handoff to another role-holder (sender must be assigned). */
+export async function createHandoff(
+  data: {
+    workerId: string;
+    recipientId: string;
+    recipientRole: string;
+    purpose: string;
+    payloadSummary?: string;
+    tenantId: string;
+  },
+  acting?: ActingInput,
+): Promise<void> {
+  await createHandoffFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: data.purpose,
+    idempotencyKey: newIdempotencyKey(),
+  });
+}
+
+/** Accept or decline a handoff addressed to the caller.
+ *  Gateway decisions are 'accept' | 'decline'. */
+export async function respondHandoff(
+  data: { handoffId: string; decision: 'accept' | 'decline' },
+  acting?: ActingInput,
+): Promise<void> {
+  await respondHandoffFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? `handoff ${data.decision}`,
+    idempotencyKey: newIdempotencyKey(),
+  });
+}
+
+/** Handoffs where the caller is the worker or the recipient. */
+export async function listMyHandoffs(uid: string, tenantId: string): Promise<WithId<Handoff>[]> {
+  const asWorker = await getDocs(
+    query(
+      collection(db, 'handoffs'),
+      where('workerId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const asRecipient = await getDocs(
+    query(
+      collection(db, 'handoffs'),
+      where('recipientId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const byId = new Map<string, WithId<Handoff>>();
+  for (const d of [...asWorker.docs, ...asRecipient.docs]) byId.set(d.id, toDoc<Handoff>(d));
+  return [...byId.values()];
+}
+
+/** The caller's own conflict declarations. */
+export async function listMyConflicts(uid: string, tenantId: string): Promise<WithId<ConflictDeclaration>[]> {
+  const q = query(
+    collection(db, 'conflictDeclarations'),
+    where('declarerId', '==', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<ConflictDeclaration>(d));
+}
+
+/** The caller's own role grants (read from Firestore; the server's
+ *  getMyGrants callable is the authoritative source used by AuthContext). */
+export async function listMyRoleGrants(uid: string, tenantId: string): Promise<WithId<RoleGrant>[]> {
+  const q = query(
+    collection(db, 'roleGrants'),
+    where('granteeId', '==', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<RoleGrant>(d));
 }
 
 // --- Opportunities (tenant-scoped) ---
@@ -413,10 +562,11 @@ export async function listAggregates(tenantId: string): Promise<WithId<Aggregate
   return snap.docs.map((d) => toDoc<Aggregate>(d));
 }
 
-// --- Audit log (subject sees own entries only) ---
+// --- Access events (subject sees own entries only) ---
+// Server-authored; the client only reads its own entries.
 
-export async function listMyAuditLogs(uid: string): Promise<WithId<AuditLog>[]> {
-  const q = query(collection(db, 'auditLogs'), where('subjectId', '==', uid));
+export async function listMyAuditLogs(uid: string): Promise<WithId<AccessEvent>[]> {
+  const q = query(collection(db, 'accessEvents'), where('subjectId', '==', uid));
   const snap = await getDocs(q);
-  return snap.docs.map((d) => toDoc<AuditLog>(d));
+  return snap.docs.map((d) => toDoc<AccessEvent>(d));
 }

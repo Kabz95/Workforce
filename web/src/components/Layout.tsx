@@ -1,26 +1,31 @@
 import { Link, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import type { Role } from '../lib/types';
+import type { AnyRole } from '../lib/types';
+import ActingRoleIndicator from './ActingRoleIndicator';
+import ActingRoleSwitcher from './ActingRoleSwitcher';
 
-const NAV: { to: string; label: string; roles?: Role[] }[] = [
+const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/', label: 'Dashboard' },
   { to: '/record', label: 'My Record', roles: ['worker', 'navigator', 'supervisor'] },
   { to: '/pathway', label: 'Pathway', roles: ['worker', 'navigator'] },
   { to: '/consents', label: 'Consents', roles: ['worker'] },
-  { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubAdmin'] },
+  { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubCoordinator'] },
   { to: '/opportunities', label: 'Opportunities' },
   { to: '/governance', label: 'Governance' },
-  { to: '/aggregates', label: 'Aggregates', roles: ['backboneAnalyst', 'governance'] },
+  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council'] },
   { to: '/audit', label: 'My Audit Log' },
+  { to: '/grants', label: 'My Roles & Grants' },
 ];
 
 export default function Layout() {
-  const { user, roles, tenantId, signOut } = useAuth();
+  const { user, actingRole, tenantId, signOut } = useAuth();
   const navigate = useNavigate();
 
+  // Navigation follows the ACTING capacity, not the held roles.
   const visible = NAV.filter((item) => {
     if (!item.roles) return true;
-    return item.roles.some((r) => roles.includes(r));
+    if (!actingRole) return false;
+    return item.roles.includes(actingRole);
   });
 
   const handleSignOut = async () => {
@@ -45,9 +50,6 @@ export default function Layout() {
           {user ? (
             <>
               <span>{user.email}</span>
-              {roles.map((r) => (
-                <span key={r} className="role-badge">{r}</span>
-              ))}
               <span className="pill">hub: {tenantId}</span>
               <button type="button" onClick={handleSignOut}>Sign out</button>
             </>
@@ -56,6 +58,12 @@ export default function Layout() {
           )}
         </div>
       </header>
+      {user && (
+        <>
+          <ActingRoleIndicator />
+          <ActingRoleSwitcher />
+        </>
+      )}
       <main className="main">
         <Outlet />
       </main>
