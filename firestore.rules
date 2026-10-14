@@ -21,6 +21,9 @@ service cloud.firestore {
     //   deletionRequests (server-authored, immutable).
     // - Claims carry roles[] (canonical 13 + systemAdmin).
     // - systemAdmin is operational-only: it grants NO data access.
+    // - List rules never grant a document-independent authoriser
+    //   role a cross-tenant view: every authoriser disjunct in a
+    //   list rule also requires storedTenantMatches.
     // ============================================================
 
     function signedIn() { return request.auth != null; }
@@ -65,11 +68,13 @@ service cloud.firestore {
 
     // ---- Tenants (hubs) ----
     // Tenant docs carry no tenantId field — the document ID IS the tenant.
-    // Creating a tenant doc grants no data access: every other rule keys
-    // on the caller's CLAIM tenant, not on this collection.
+    // Creating a tenant is governance (council / backboneLead only):
+    // a tenant doc itself grants no data access — every other rule keys
+    // on the caller's CLAIM tenant, not on this collection — but tenant
+    // creation is not something any signed-in user may do.
     match /tenants/{tenantId} {
       allow get, list: if signedIn();
-      allow create: if signedIn();
+      allow create: if hasAnyRole(['council', 'backboneLead']);
       allow update: if isHubCoordinator() && claimTenant() == tenantId;
       allow delete: if false;
     }
@@ -119,7 +124,8 @@ service cloud.firestore {
         && (uid() == resource.data.granteeId
           || (canAuthorise() && storedTenantMatches(resource.data)));
       allow list: if signedIn()
-        && (uid() == resource.data.granteeId || canAuthorise());
+        && (uid() == resource.data.granteeId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create, update, delete: if false;
     }
 
@@ -128,19 +134,22 @@ service cloud.firestore {
       allow get: if signedIn()
         && (uid() == resource.data.personId
           || (canAuthorise() && storedTenantMatches(resource.data)));
-      allow list: if signedIn() && (uid() == resource.data.personId || canAuthorise());
+      allow list: if signedIn()
+        && (uid() == resource.data.personId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create, update, delete: if false;
     }
 
     // ---- Assignments (server-written) ----
     match /assignments/{assignmentId} {
-      allow get: if signedIn()
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (uid() == resource.data.workerId
+          || uid() == resource.data.holderId
+          || isHubCoordinator());
+      allow list: if signedIn()
         && (uid() == resource.data.workerId
           || uid() == resource.data.holderId
           || (isHubCoordinator() && storedTenantMatches(resource.data)));
-      allow list: if signedIn()
-        && (uid() == resource.data.workerId
-          || uid() == resource.data.holderId || isHubCoordinator());
       allow create, update, delete: if false;
     }
 
@@ -150,7 +159,8 @@ service cloud.firestore {
         && (uid() == resource.data.declarerId
           || (canAuthorise() && storedTenantMatches(resource.data)));
       allow list: if signedIn()
-        && (uid() == resource.data.declarerId || canAuthorise());
+        && (uid() == resource.data.declarerId
+          || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create: if signedIn()
         && uid() == request.resource.data.declarerId
         && incomingTenantMatches(request.resource.data)
@@ -163,24 +173,34 @@ service cloud.firestore {
     }
 
     // ---- Handoffs ----
+    // Sender offers → recipient responds. The responder is the
+    // RECIPIENT (matches the Functions gateway, which verifies the
+    // recipient's live grant for the recipient role). The worker is
+    // the subject, not the responder.
     match /handoffs/{handoffId} {
       allow get: if signedIn()
         && (uid() == resource.data.workerId
           || uid() == resource.data.senderId
           || uid() == resource.data.recipientId);
-      allow list: if signedIn()
+      allow list: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.workerId
           || uid() == resource.data.senderId
           || uid() == resource.data.recipientId);
       allow create: if signedIn()
         && uid() == request.resource.data.senderId
         && incomingTenantMatches(request.resource.data)
-        && request.resource.data.status == 'offered';
+        && request.resource.data.status == 'offered'
+        && request.resource.data.senderRole in claimRoles()
+        && request.resource.data.senderId != request.resource.data.workerId
+        && request.resource.data.recipientId != request.resource.data.workerId
+        && request.resource.data.senderId != request.resource.data.recipientId;
       allow update: if signedIn()
         && uid() == resource.data.recipientId
         && storedTenantMatches(resource.data)
         && incomingTenantMatches(request.resource.data)
-        && onlyKeysChange(['status']);
+        && onlyKeysChange(['status'])
+        && resource.data.status == 'offered'
+        && request.resource.data.status in ['accepted', 'declined', 'closed'];
       allow delete: if false;
     }
 
@@ -190,7 +210,8 @@ service cloud.firestore {
       allow create: if signedIn() && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.get('sharedWith', []) == [];
-      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
@@ -198,11 +219,13 @@ service cloud.firestore {
     match /firstContactForms/{formId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (isOwner(resource.data) || isSharedWith(resource.data));
-      allow list: if signedIn() && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
       allow create: if signedIn() && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.get('sharedWith', []) == [];
-      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
@@ -210,11 +233,13 @@ service cloud.firestore {
     match /pathwaySteps/{stepId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (isOwner(resource.data) || isSharedWith(resource.data));
-      allow list: if signedIn() && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
       allow create: if signedIn() && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.get('sharedWith', []) == [];
-      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
@@ -222,11 +247,13 @@ service cloud.firestore {
     match /certificationNavigation/{navId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (isOwner(resource.data) || isSharedWith(resource.data));
-      allow list: if signedIn() && (isOwner(resource.data) || isSharedWith(resource.data));
+      allow list: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || isSharedWith(resource.data));
       allow create: if signedIn() && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.get('sharedWith', []) == [];
-      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
@@ -240,18 +267,22 @@ service cloud.firestore {
         && uid() == request.resource.data.granterId
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.resourceType in [
-          'firstContactForms', 'pathwaySteps', 'certificationNavigation']
-        && request.resource.data.scope in [
-          'read:firstContactForms', 'read:pathwaySteps', 'read:certificationNavigation',
-          'read:supervisionSessions']
+          'firstContactForms', 'pathwaySteps', 'certificationNavigation', 'supervisionSessions']
+        && request.resource.data.scope == 'read:' + request.resource.data.resourceType
+        && request.resource.data.granteeId is string
+        && request.resource.data.resourceId is string
+        && request.resource.data.purpose is string
         && request.resource.data.revokedAt == null
         && request.resource.data.expiresAt > request.time;
       // Only the granter may revoke, and only revokedAt may change.
+      // Revocation is one-way: null -> timestamp only (no un-revoke).
       allow update: if signedIn()
         && uid() == resource.data.granterId
         && storedTenantMatches(resource.data)
         && incomingTenantMatches(request.resource.data)
-        && onlyKeysChange(['revokedAt']);
+        && onlyKeysChange(['revokedAt'])
+        && resource.data.revokedAt == null
+        && request.resource.data.revokedAt is timestamp;
       allow delete: if false;
     }
 
@@ -265,7 +296,8 @@ service cloud.firestore {
       allow update: if signedIn()
         && (uid() == resource.data.employerId || isHubCoordinator())
         && storedTenantMatches(resource.data)
-        && incomingTenantMatches(request.resource.data);
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.employerId == resource.data.employerId;
       allow delete: if signedIn()
         && (uid() == resource.data.employerId || isHubCoordinator())
         && storedTenantMatches(resource.data);
@@ -275,7 +307,8 @@ service cloud.firestore {
     match /opportunityApplications/{applicationId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (isOwner(resource.data) || uid() == resource.data.employerId);
-      allow list: if signedIn() && (isOwner(resource.data) || uid() == resource.data.employerId);
+      allow list: if signedIn() && storedTenantMatches(resource.data)
+        && (isOwner(resource.data) || uid() == resource.data.employerId);
       allow create: if signedIn() && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.get('sharedWith', []) == [];
@@ -296,11 +329,13 @@ service cloud.firestore {
     match /employers/{employerId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (isOwner(resource.data) || canAuthorise());
-      allow list: if signedIn() && (isOwner(resource.data) || canAuthorise());
+      allow list: if signedIn()
+        && (isOwner(resource.data) || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create: if signedIn() && hasRole('employer')
         && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data);
-      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
@@ -309,7 +344,7 @@ service cloud.firestore {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.employerId || canAuthorise());
       allow list: if signedIn()
-        && (uid() == resource.data.employerId || canAuthorise());
+        && (uid() == resource.data.employerId || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create: if signedIn()
         && uid() == request.resource.data.employerId
         && incomingTenantMatches(request.resource.data);
@@ -336,7 +371,7 @@ service cloud.firestore {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.complainantId || canAuthorise());
       allow list: if signedIn()
-        && (uid() == resource.data.complainantId || canAuthorise());
+        && (uid() == resource.data.complainantId || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create: if signedIn()
         && uid() == request.resource.data.complainantId
         && incomingTenantMatches(request.resource.data)
@@ -358,7 +393,8 @@ service cloud.firestore {
       allow update: if signedIn()
         && uid() == resource.data.authorId
         && storedTenantMatches(resource.data)
-        && incomingTenantMatches(request.resource.data);
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.authorId == resource.data.authorId;
       allow delete: if signedIn()
         && uid() == resource.data.authorId
         && storedTenantMatches(resource.data);
@@ -369,21 +405,30 @@ service cloud.firestore {
       allow get, list: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
       allow create: if signedIn() && isOwner(request.resource.data)
         && incomingTenantMatches(request.resource.data);
-      allow update: if signedIn() && isOwner(resource.data) && immutableCoreUnchanged();
+      allow update: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data)
+        && immutableCoreUnchanged();
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
     // ---- Aggregates (server-written; governance + analyst read) ----
+    // Published by design: national roles (analyst, council,
+    // backboneLead) read cross-hub; hub roles stay tenant-scoped.
+    // Cells < 5 are suppressed server-side before any aggregate is
+    // written, so cross-hub reads cannot re-identify individuals.
     match /aggregates/{aggregateId} {
-      allow get, list: if signedIn() && storedTenantMatches(resource.data)
-        && hasAnyRole(['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead']);
+      allow get, list: if signedIn()
+        && (hasAnyRole(['analyst', 'council', 'backboneLead'])
+          || (storedTenantMatches(resource.data)
+            && hasAnyRole(['steeringCircle', 'hubCoordinator', 'privacyLead'])));
       allow create, update, delete: if false;
     }
 
     // ---- Aggregate releases (server-written) ----
     match /aggregateReleases/{releaseId} {
-      allow get, list: if signedIn() && storedTenantMatches(resource.data)
-        && hasAnyRole(['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead']);
+      allow get, list: if signedIn()
+        && (hasAnyRole(['analyst', 'council', 'backboneLead'])
+          || (storedTenantMatches(resource.data)
+            && hasAnyRole(['steeringCircle', 'hubCoordinator', 'privacyLead'])));
       allow create, update, delete: if false;
     }
 
@@ -393,7 +438,7 @@ service cloud.firestore {
         && (uid() == resource.data.subjectId
           || (isPrivacyLead() && storedTenantMatches(resource.data)));
       allow list: if signedIn()
-        && (uid() == resource.data.subjectId || isPrivacyLead());
+        && (uid() == resource.data.subjectId || (isPrivacyLead() && storedTenantMatches(resource.data)));
       allow create, update, delete: if false;
     }
 

@@ -780,10 +780,24 @@ export const respondHandoffFn = onCall(async (request) => {
   if (h.status !== 'offered') {
     throw new HttpsError('failed-precondition', `Handoff is ${h.status}, not offered.`);
   }
-  // Only the worker (the subject) may respond. The worker acts on their
-  // own record — no grant document required for responding.
-  if (h.workerId !== caller.uid) {
-    throw new HttpsError('permission-denied', 'Only the worker the handoff is about may respond.');
+  // Only the RECIPIENT may respond (sender offers → recipient accepts).
+  // The recipient is verified against a live grant for the recipient
+  // role in the handoff's scope. The worker is the subject of the
+  // handoff, not its responder.
+  if (h.recipientId !== caller.uid) {
+    throw new HttpsError('permission-denied', 'Only the handoff recipient may respond.');
+  }
+  const recipientGrants = await liveGrantsFor(caller.uid);
+  const recipientGrant = recipientGrants.find(
+    (g) =>
+      g.role === h.recipientRole &&
+      grantCoversScope(g, { tenantId: h.tenantId, scopeType: 'hub', scopeId: h.tenantId }),
+  );
+  if (!recipientGrant) {
+    throw new HttpsError(
+      'permission-denied',
+      'The recipient does not hold a live grant for the recipient role in this scope.',
+    );
   }
   const action = data.decision === 'accept' ? 'accept' : 'decline';
   const transition = transitionHandoff('offered', action);
@@ -798,8 +812,8 @@ export const respondHandoffFn = onCall(async (request) => {
       action: data.decision === 'accept' ? 'acceptHandoff' : 'declineHandoff',
       resourceType: 'handoff',
       resourceId: ref.id,
-      actingRole: 'worker',
-      actingGrantId: null,
+      actingRole: recipientGrant.role,
+      actingGrantId: recipientGrant.id ?? null,
       purpose: data.purpose ?? 'respond to a handoff',
       correlationId: ref.id,
       result: 'allowed',

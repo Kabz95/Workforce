@@ -23,6 +23,12 @@
  * - consent create/revoke rules (allowlist scopes, expiry required,
  *   granter-only revoke, revokedAt-only change)
  * - handoff create/update rules (sender creates, recipient responds)
+ * - handoff transitions (offered -> accepted/declined/closed only;
+ *   senderRole must be a role the sender holds)
+ * - cross-tenant list leak (authoriser disjuncts are tenant-pinned)
+ * - tenant creation restricted to council / backboneLead
+ * - national aggregate reads (analyst/council/backboneLead cross-hub;
+ *   hub roles tenant-scoped); consent revocation is one-way
  * - no cross-role leakage (employer cannot read worker records;
  *   analyst cannot read raw evaluation submissions)
  */
@@ -54,6 +60,7 @@ const privacyLead = () => ctx('privacy-1', { roles: ['privacyLead'], tenantId: H
 const analyst = () => ctx('analyst-1', { roles: ['analyst'], tenantId: HUB });
 const employer = () => ctx('employer-1', { roles: ['employer'], tenantId: HUB });
 const steering = () => ctx('steer-1', { roles: ['steeringCircle'], tenantId: HUB });
+const council = () => ctx('council-1', { roles: ['council'], tenantId: HUB });
 const unauth = () => testEnv.unauthenticatedContext();
 
 async function seed() {
@@ -274,6 +281,38 @@ describe('consent rules', () => {
     await assert.rejects(db.doc('consents/consent-1').update({ scope: 'read:workers' }));
     await assert.rejects(db.doc('consents/consent-1').update({ granteeId: 'worker-9' }));
   });
+
+  it('worker creates a supervisionSessions consent (allowlist includes it)', async () => {
+    const db = worker1().firestore();
+    const ref = await db.collection('consents').add({
+      granterId: 'worker-1', granteeId: 'worker-2', tenantId: HUB,
+      scope: 'read:supervisionSessions', resourceType: 'supervisionSessions', resourceId: 'sess-1',
+      grantedAt: new Date(), expiresAt: new Date(Date.now() + 86400000), revokedAt: null,
+      purpose: 'supervision sharing',
+    });
+    assert.ok(ref.id);
+  });
+
+  it('consent scope must correspond to its resourceType (no cross-type scope)', async () => {
+    const db = worker1().firestore();
+    await assert.rejects(
+      db.collection('consents').add({
+        granterId: 'worker-1', granteeId: 'worker-2', tenantId: HUB,
+        scope: 'read:supervisionSessions', resourceType: 'pathwaySteps', resourceId: 'step-1',
+        grantedAt: new Date(), expiresAt: new Date(Date.now() + 86400000), revokedAt: null,
+        purpose: 'mismatched scope',
+      }),
+    );
+  });
+
+  it('revocation is one-way: cannot un-revoke or re-revoke', async () => {
+    const db = worker1().firestore();
+    await db.doc('consents/consent-1').update({ revokedAt: new Date() });
+    // Un-revoke (back to null) denied.
+    await assert.rejects(db.doc('consents/consent-1').update({ revokedAt: null }));
+    // Re-revoke (a new timestamp over an existing one) denied.
+    await assert.rejects(db.doc('consents/consent-1').update({ revokedAt: new Date() }));
+  });
 });
 
 describe('role grants + access events reads', () => {
@@ -388,5 +427,131 @@ describe('users bootstrap', () => {
       }),
     );
     await assert.rejects(fresh.firestore().doc('users/x').set({ tenantId: 'demo-hub', roles: ['worker'] }));
+  });
+});
+
+describe('handoff responder + transitions (B1)', () => {
+  it('non-recipient cannot respond (worker subject and sender denied)', async () => {
+    await assert.rejects(worker1().firestore().doc('handoffs/handoff-1').update({ status: 'accepted' }));
+    await assert.rejects(coordinator().firestore().doc('handoffs/handoff-1').update({ status: 'accepted' }));
+  });
+
+  it('recipient can close an offered handoff (offered -> closed)', async () => {
+    const sender = coordinator().firestore();
+    const ref = await sender.collection('handoffs').add({
+      workerId: 'worker-1', senderId: 'coord-1', senderRole: 'hubCoordinator',
+      recipientId: 'worker-2', recipientRole: 'mentor', purpose: 'test',
+      payloadSummary: '', tenantId: HUB, status: 'offered',
+    });
+    await worker2().firestore().doc(`handoffs/${ref.id}`).update({ status: 'closed' });
+  });
+
+  it('recipient cannot resurrect a declined handoff (declined -> accepted denied)', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc('handoffs/handoff-declined').set({
+        workerId: 'worker-1', senderId: 'coord-1', senderRole: 'hubCoordinator',
+        recipientId: 'worker-2', recipientRole: 'mentor', purpose: 'test',
+        payloadSummary: '', tenantId: HUB, status: 'declined',
+      });
+    });
+    await assert.rejects(
+      worker2().firestore().doc('handoffs/handoff-declined').update({ status: 'accepted' }),
+    );
+  });
+
+  it('create with impersonated senderRole denied (claimed role not held)', async () => {
+    await assert.rejects(
+      coordinator().firestore().collection('handoffs').add({
+        workerId: 'worker-1', senderId: 'coord-1', senderRole: 'mentor',
+        recipientId: 'worker-2', recipientRole: 'mentor', purpose: 'forged',
+        payloadSummary: '', tenantId: HUB, status: 'offered',
+      }),
+    );
+  });
+});
+
+describe('cross-tenant list leak (B2)', () => {
+  async function seedOtherHub() {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('roleGrants/grant-other').set({
+        granteeId: 'worker-9', role: 'worker', scopeType: 'self', scopeId: 'worker-9',
+        tenantId: OTHER_HUB, status: 'active', validFrom: Date.now() - 1000, validUntil: null,
+        grantedBy: 'admin', basis: 'test',
+      });
+      await db.doc('complaints/complaint-other').set({
+        complainantId: 'worker-9', tenantId: OTHER_HUB, status: 'open', body: 'x',
+      });
+      await db.doc('accessEvents/event-other').set({
+        subjectId: 'worker-9', actorId: 'worker-9', action: 'grantAccess',
+        resourceType: 'pathwaySteps', resourceId: 'step-1', actingRole: 'worker',
+        actingGrantId: 'grant-other', purpose: 'test', correlationId: 'c2',
+        result: 'allowed', createdAt: new Date(), tenantId: OTHER_HUB,
+      });
+    });
+  }
+
+  it('authoriser cannot list cross-tenant role grants / complaints / access events', async () => {
+    await seedOtherHub();
+    await assert.rejects(
+      coordinator().firestore().collection('roleGrants').where('tenantId', '==', OTHER_HUB).get(),
+    );
+    await assert.rejects(
+      coordinator().firestore().collection('complaints').where('tenantId', '==', OTHER_HUB).get(),
+    );
+    await assert.rejects(
+      privacyLead().firestore().collection('accessEvents').where('tenantId', '==', OTHER_HUB).get(),
+    );
+  });
+
+  it('authoriser CAN list own-tenant role grants (positive control)', async () => {
+    const snap = await coordinator().firestore().collection('roleGrants').where('tenantId', '==', HUB).get();
+    assert.ok(snap.docs.length >= 1);
+  });
+});
+
+describe('tenant creation (B3)', () => {
+  it('claim-less and non-council users cannot create tenants; council can', async () => {
+    const noClaims = testEnv.authenticatedContext('noclaims-1', {});
+    await assert.rejects(noClaims.firestore().doc('tenants/tenant-x').set({ name: 'X' }));
+    await assert.rejects(coordinator().firestore().doc('tenants/tenant-x').set({ name: 'X' }));
+    await council().firestore().doc('tenants/tenant-council').set({ name: 'Council hub' });
+    const snap = await council().firestore().doc('tenants/tenant-council').get();
+    assert.equal(snap.exists, true);
+  });
+});
+
+describe('national aggregate reads (B4)', () => {
+  async function seedAggregates() {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('aggregates/agg-other').set({
+        tenantId: OTHER_HUB, metric: 'evaluation:q1', period: '2026-10-14',
+        value: 10, breakdown: { answer: 'a' }, createdAt: new Date(),
+      });
+      await db.doc('aggregates/agg-hub').set({
+        tenantId: HUB, metric: 'evaluation:q1', period: '2026-10-14',
+        value: 12, breakdown: { answer: 'a' }, createdAt: new Date(),
+      });
+      await db.doc('aggregateReleases/release-other').set({
+        tenantId: OTHER_HUB, metric: 'evaluation:q1', period: '2026-10-14',
+        releasedAt: new Date(),
+      });
+    });
+  }
+
+  it('analyst CAN read cross-hub aggregates and releases', async () => {
+    await seedAggregates();
+    const agg = await analyst().firestore().doc('aggregates/agg-other').get();
+    assert.equal(agg.exists, true);
+    const rel = await analyst().firestore().doc('aggregateReleases/release-other').get();
+    assert.equal(rel.exists, true);
+  });
+
+  it('hub role CANNOT read another hub aggregates; CAN read own-hub aggregates', async () => {
+    await seedAggregates();
+    await assert.rejects(coordinator().firestore().doc('aggregates/agg-other').get());
+    const own = await coordinator().firestore().doc('aggregates/agg-hub').get();
+    assert.equal(own.exists, true);
   });
 });
