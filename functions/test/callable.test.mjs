@@ -150,7 +150,7 @@ before(async () => {
         'Start the emulators first: firebase emulators:start --project demo-workforce --only auth,firestore,functions',
     );
   }
-  admin = await import('firebase-admin');
+  admin = (await import('firebase-admin')).default;
   admin.initializeApp({ projectId: PROJECT });
   db = admin.firestore();
   auth = admin.auth();
