@@ -35,7 +35,6 @@ import {
   isGrantLive,
   isValidPurpose,
   mayAuthorizeGrant,
-  migrateLegacyRole,
   selectDefaultGrant,
   transitionHandoff,
   validateGrantTransition,
@@ -1206,45 +1205,5 @@ export const ensureMyPersonFn = onCall(async (request) => {
   }
   return { ok: true, ...result };
 });
-
-// ---------------------------------------------------------------------------
-// migrateLegacyClaims — Admin-SDK helper used by set-claims.cjs.
-// NOT a callable: only the admin script (with a service account) runs it.
-// ---------------------------------------------------------------------------
-
-export async function migrateLegacyClaimsForUser(
-  uid: string,
-  scopeHint: 'hub' | 'network' | null,
-  tenantId: string,
-): Promise<{ role: AnyRole; grantId: string }> {
-  const user = await getAuth().getUser(uid);
-  const claims = (user.customClaims ?? {}) as Record<string, unknown>;
-  const legacy = typeof claims.role === 'string' ? claims.role : null;
-  if (!legacy) throw new Error(`User ${uid} has no legacy single-role claim.`);
-  const role = migrateLegacyRole(legacy, scopeHint);
-  const ref = db.collection(GRANTS).doc();
-  const now = Date.now();
-  await ref.set({
-    granteeId: uid,
-    role,
-    scopeType: role === 'council' || role === 'backboneLead' || role === 'analyst' || role === 'researcher' ? 'network' : 'hub',
-    scopeId: role === 'council' || role === 'backboneLead' || role === 'analyst' || role === 'researcher' ? 'network' : tenantId,
-    tenantId,
-    status: 'active',
-    validFrom: Timestamp.fromMillis(now),
-    validUntil: null,
-    grantedBy: 'migration',
-    basis: `legacy claim migration: ${legacy}`,
-    needsReview: false,
-    createdAt: FieldValue.serverTimestamp(),
-    updatedAt: FieldValue.serverTimestamp(),
-  });
-  await db.collection(PERSONS).doc(uid).set(
-    { tenantId, migratedAt: FieldValue.serverTimestamp() },
-    { merge: true },
-  );
-  await syncClaimsForUser(uid);
-  return { role, grantId: ref.id };
-}
 
 export { IDEMPOTENCY, ACCESS_EVENTS };
