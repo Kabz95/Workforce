@@ -95,7 +95,7 @@ export default function Mentorships() {
       <h1>Mentorships</h1>
       <p>Your mentorship pairs. Each mentorship has exactly two participants, and you are one of them.</p>
       <ErrorNotice error={error} />
-      {notice && <p role="status">{notice}</p>}
+      {notice && <p role="status" data-testid="notice">{notice}</p>}
 
       <form onSubmit={create}>
         <h2>Start a mentorship</h2>

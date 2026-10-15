@@ -74,12 +74,15 @@ export default function Supervision() {
     setError(null);
     setNotice('');
     try {
+      // An empty date records today: the server rejects a missing/invalid
+      // dateMs, and the UI must never send one.
+      const parsedDateMs = date ? new Date(date).getTime() : NaN;
       await createSupervisionSession(
         {
           supervisorId: supervisorId.trim(),
           tenantId,
           notes: notes.trim(),
-          dateMs: date ? new Date(date).getTime() : undefined,
+          dateMs: Number.isFinite(parsedDateMs) ? parsedDateMs : Date.now(),
         },
         { ...acting, purpose: 'supervision reflection' },
       );
@@ -98,7 +101,7 @@ export default function Supervision() {
       <h1>Supervision</h1>
       <p>Your supervision sessions. You own these records; your supervisor reads one only when you consent to share it.</p>
       <ErrorNotice error={error} />
-      {notice && <p role="status">{notice}</p>}
+      {notice && <p role="status" data-testid="notice">{notice}</p>}
 
       {actingRole === 'worker' && (
         <form onSubmit={create}>
