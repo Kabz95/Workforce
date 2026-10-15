@@ -42,6 +42,17 @@ import {
   type DeletionPlanStep,
 } from './kernel';
 import {
+  aggregateSupportSignals,
+  buildDeveloperBrief,
+  generateSupportAnswer,
+  isSupportCategory,
+  SUPPORT_AGGREGATION_WINDOW_DAYS,
+  SUPPORT_MAX_QUESTION_CHARS,
+  SUPPORT_MIN_CELL,
+  SUPPORT_RATE_LIMIT_PER_HOUR,
+  type SupportSignalEvent,
+} from './supportAgent';
+import {
   callerFrom,
   resolveCommandContext,
   writeAccessEventInTx,
@@ -61,6 +72,8 @@ export {
   closeHandoffFn as closeHandoff,
   inviteMemberFn as inviteMember,
   ensureMyPersonFn as ensureMyPerson,
+  createSupervisionSessionFn as createSupervisionSession,
+  createMentorshipFn as createMentorship,
 } from './gateway';
 
 // Collections whose documents are owned by a worker (ownerId) and
@@ -332,6 +345,29 @@ async function buildExportBundle(uid: string): Promise<Record<string, unknown[]>
   bundle['handoffs'] = handoffs.docs.map((d) => ({ id: d.id, ...d.data() }));
   return bundle;
 }
+
+/**
+ * Download URL for an export object. In production this is a signed
+ * URL (7-day expiry). The Storage emulator cannot sign URLs (no
+ * private key in the emulator credential), so against the emulator we
+ * return the emulator's own download URL for the object instead.
+ */
+async function exportDownloadUrl(file: {
+  name: string;
+  bucket: { name: string };
+  getSignedUrl: (options: { action: 'read'; expires: number }) => Promise<[string]>;
+}): Promise<string> {
+  const emulatorHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+  if (emulatorHost) {
+    return `http://${emulatorHost}/v0/b/${file.bucket.name}/o/${encodeURIComponent(file.name)}?alt=media`;
+  }
+  const [url] = await file.getSignedUrl({
+    action: 'read',
+    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  });
+  return url;
+}
+
 /**
  * requestExport — bundle every document the caller owns, return a
  * signed download URL valid 7 days. Callable by the worker.
@@ -379,11 +415,10 @@ export const requestExport = onCall(async (request) => {
     .bucket()
     .file(`exports/${uid}/export-${Date.now()}.json`);
   await file.save(payload, { contentType: 'application/json' });
-  const [url] = await file.getSignedUrl({
-    action: 'read',
-    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-  });
-  const result = { url };
+  const url = await exportDownloadUrl(file);
+  // The file path is returned alongside the URL so callers (and tests)
+  // can verify the stored object without parsing the signed URL.
+  const result = { url, file: file.name, expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 };
   await db.runTransaction(async (tx) => {
     writeAccessEventInTx(tx, {
       subjectId: uid,
@@ -494,13 +529,18 @@ async function fetchStepDocs(
  * Apply one deletion-plan step to one document, inside the pass batch.
  * revokeConsent also strips the other party from the target's
  * sharedWith (the target is read first; a missing target is skipped,
- * never fails the pass).
+ * never fails the pass). The strip itself is DEFERRED: it is collected
+ * in `deferredStrips` and applied by runDeletionPass after the plan
+ * loop, skipping any target deleted in the same pass — otherwise the
+ * batch would delete then update the same entity, which Firestore
+ * rejects ("Cannot delete then update an entity in the same request").
  */
 async function applyDeletionStep(
   batch: FirebaseFirestore.WriteBatch,
   step: DeletionPlanStep,
   docSnap: FirebaseFirestore.QueryDocumentSnapshot,
   uid: string,
+  deferredStrips: Array<{ target: FirebaseFirestore.DocumentReference; stripUid: string }>,
 ): Promise<void> {
   const ref = docSnap.ref;
   const stamp = { updatedAt: FieldValue.serverTimestamp() };
@@ -544,10 +584,11 @@ async function applyDeletionStep(
       const target = db.collection(consent.resourceType).doc(consent.resourceId);
       const targetSnap = await target.get();
       if (targetSnap.exists) {
-        batch.update(target, {
-          sharedWith: FieldValue.arrayRemove(stripUid),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
+        // Deferred: runDeletionPass applies this after the plan loop,
+        // skipping targets deleted in the same pass (delete-then-update
+        // on one entity is rejected by Firestore). The doc is gone in
+        // that case, so the strip is moot.
+        deferredStrips.push({ target, stripUid });
       }
       return;
     }
@@ -583,10 +624,7 @@ async function runDeletionPass(
         .bucket()
         .file(`exports/${uid}/export-${Date.now()}.json`);
       await file.save(payload, { contentType: 'application/json' });
-      const [url] = await file.getSignedUrl({
-        action: 'read',
-        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      });
+      const url = await exportDownloadUrl(file);
       job.exportUrl = url;
       await jobRef.update({ exportUrl: url, updatedAt: FieldValue.serverTimestamp() });
     } catch (err) {
@@ -598,6 +636,11 @@ async function runDeletionPass(
   // 2. Deletion steps from the cursor, within the doc budget.
   let { stepIndex, lastDocId, processed, deleted, anonymised } = job;
   const batch = db.batch();
+  // revokeConsent target strips, deferred out of applyDeletionStep.
+  const deferredStrips: Array<{ target: FirebaseFirestore.DocumentReference; stripUid: string }> = [];
+  // Doc paths deleted in this pass — strips aimed at them are skipped
+  // (delete-then-update on one entity is rejected by Firestore).
+  const deletedPaths = new Set<string>();
   let docsInPass = 0;
   while (stepIndex < DELETION_PLAN.length && docsInPass < DELETION_BATCH_DOCS) {
     const step = DELETION_PLAN[stepIndex];
@@ -609,10 +652,12 @@ async function runDeletionPass(
       continue;
     }
     for (const docSnap of docs) {
-      await applyDeletionStep(batch, step, docSnap, uid);
+      await applyDeletionStep(batch, step, docSnap, uid, deferredStrips);
       lastDocId = docSnap.id;
-      if (step.action === 'delete') deleted += 1;
-      else anonymised += 1;
+      if (step.action === 'delete') {
+        deleted += 1;
+        deletedPaths.add(docSnap.ref.path);
+      } else anonymised += 1;
     }
     processed += docs.length;
     docsInPass += docs.length;
@@ -623,6 +668,15 @@ async function runDeletionPass(
     }
     // A full page means the budget is spent; the loop exits and the
     // next pass resumes this step from the cursor.
+  }
+  // Deferred sharedWith strips from revokeConsent steps, skipping any
+  // target deleted in this same pass.
+  for (const { target, stripUid } of deferredStrips) {
+    if (deletedPaths.has(target.path)) continue;
+    batch.update(target, {
+      sharedWith: FieldValue.arrayRemove(stripUid),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
   }
   const done = stepIndex >= DELETION_PLAN.length;
 
@@ -993,6 +1047,242 @@ export const onConsentRevoke = onDocumentUpdated(
         ),
       );
       await batch.commit();
+    }
+  },
+);
+
+/**
+ * Support agent callables + developer-suggestions job (Phase 3, P3.1/P3.2).
+ *
+ * askSupportAgent — Kernel-governed, record-blind app support.
+ * Governance (see COMMAND_MATRIX 'askSupport'): authenticated caller +
+ * validated purpose + best-effort acting grant + server-authored audit
+ * (category/outcome only — NEVER the verbatim question). authorizeCommand
+ * is deliberately NOT used: it denies ungranted callers, and support
+ * must serve bare persons (e.g. invitation problems).
+ *
+ * The callable never reads worker records, never mutates anything, and
+ * never stores a transcript. Rate limit: 30 questions / caller / hour.
+ */
+
+const SUPPORT_AUDIT_ACTION = 'askSupport';
+const SUPPORT_FEEDBACK_ACTION = 'supportFeedback';
+
+/** Sanitized error code only (e.g. auth/invalid-credential). No stack traces, no messages. */
+function validErrorCode(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/.test(value);
+}
+
+async function supportRateLimitExceeded(uid: string): Promise<boolean> {
+  const hourAgo = Date.now() - 60 * 60 * 1000;
+  const snap = await db
+    .collection(ACCESS_EVENTS)
+    .where('actorId', '==', uid)
+    .limit(100)
+    .get();
+  let count = 0;
+  for (const doc of snap.docs) {
+    const d = doc.data() as { action?: string; createdAt?: Timestamp };
+    if (d.action !== SUPPORT_AUDIT_ACTION) continue;
+    const ms = d.createdAt?.toMillis?.() ?? 0;
+    if (ms >= hourAgo) count += 1;
+  }
+  return count >= SUPPORT_RATE_LIMIT_PER_HOUR;
+}
+
+export const askSupportAgent = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    question?: unknown;
+    errorCode?: unknown;
+  } & ActingInput;
+  if (typeof data.question !== 'string' || data.question.trim().length === 0) {
+    throw new HttpsError('invalid-argument', 'question is required.');
+  }
+  if (data.question.length > SUPPORT_MAX_QUESTION_CHARS) {
+    throw new HttpsError(
+      'invalid-argument',
+      `question must be at most ${SUPPORT_MAX_QUESTION_CHARS} characters.`,
+    );
+  }
+  const errorCode = validErrorCode(data.errorCode) ? data.errorCode : null;
+  // Best-effort acting grant (highRisk false): bare persons pass.
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
+    false,
+    false,
+  );
+  if (await supportRateLimitExceeded(caller.uid)) {
+    throw new HttpsError('resource-exhausted', 'Too many support questions this hour. Try again later.');
+  }
+  const tenantId = ctx.actingGrant?.tenantId ?? caller.claimsTenantId ?? 'network';
+  const answer = await generateSupportAnswer({
+    question: data.question,
+    actingRole: ctx.actingGrant?.role ?? null,
+  });
+  // Audit: category + outcome + sources only. The question text is
+  // NEVER written — not here, not anywhere.
+  await db.collection(ACCESS_EVENTS).add(
+    buildAccessEvent(
+      {
+        subjectId: caller.uid,
+        actorId: caller.uid,
+        action: SUPPORT_AUDIT_ACTION,
+        resourceType: 'support',
+        resourceId: `support:${caller.uid}:${Date.now()}`,
+        actingRole: ctx.actingGrant?.role ?? 'none',
+        actingGrantId: ctx.actingGrant?.id ?? null,
+        purpose: 'app support',
+        correlationId: `askSupport:${caller.uid}:${Date.now()}`,
+        result: 'allowed',
+        detail: {
+          tenantId,
+          category: answer.category,
+          outcome: answer.outcome,
+          vertexUsed: answer.vertexUsed,
+          sources: answer.sources.map((s) => s.id),
+          errorCode,
+        },
+      },
+      FieldValue.serverTimestamp(),
+    ),
+  );
+  return {
+    answer: answer.answer,
+    category: answer.category,
+    outcome: answer.outcome,
+    sources: answer.sources.map((s) => ({ id: s.id, title: s.title, route: s.route, version: s.version })),
+    route: answer.route,
+    vertexUsed: answer.vertexUsed,
+    resources: answer.resources,
+  };
+});
+
+/**
+ * submitSupportFeedback — helpful / not-helpful for a support answer.
+ * Writes an audit event with category + boolean only. No text.
+ */
+export const submitSupportFeedback = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    helpful?: unknown;
+    category?: unknown;
+  } & ActingInput;
+  if (typeof data.helpful !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'helpful must be a boolean.');
+  }
+  if (!isSupportCategory(data.category)) {
+    throw new HttpsError('invalid-argument', 'category must be a valid support category.');
+  }
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
+    false,
+    false,
+  );
+  const tenantId = ctx.actingGrant?.tenantId ?? caller.claimsTenantId ?? 'network';
+  await db.collection(ACCESS_EVENTS).add(
+    buildAccessEvent(
+      {
+        subjectId: caller.uid,
+        actorId: caller.uid,
+        action: SUPPORT_FEEDBACK_ACTION,
+        resourceType: 'support',
+        resourceId: `support-feedback:${caller.uid}:${Date.now()}`,
+        actingRole: ctx.actingGrant?.role ?? 'none',
+        actingGrantId: ctx.actingGrant?.id ?? null,
+        purpose: 'app support',
+        correlationId: `supportFeedback:${caller.uid}:${Date.now()}`,
+        result: 'allowed',
+        detail: { tenantId, category: data.category, feedbackHelpful: data.helpful },
+      },
+      FieldValue.serverTimestamp(),
+    ),
+  );
+  return { ok: true };
+});
+
+/**
+ * aggregateSupportInsights — weekly developer brief (P3.2).
+ * Reads askSupport + supportFeedback audit events, groups by tenant,
+ * applies the ≥5 cell floor, and writes one DRAFT brief per tenant
+ * (plus a 'network' brief for events without a tenant) to
+ * developerSuggestions. Counts only — no raw text, no identities.
+ * Doc ID is period-based, so re-runs overwrite the same brief.
+ */
+export const aggregateSupportInsights = onSchedule(
+  { schedule: 'every monday 04:00', timeZone: 'America/Toronto' },
+  async () => {
+    const periodEnd = new Date();
+    const periodStart = new Date(
+      periodEnd.getTime() - SUPPORT_AGGREGATION_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const snap = await db
+      .collection(ACCESS_EVENTS)
+      .where('action', 'in', [SUPPORT_AUDIT_ACTION, SUPPORT_FEEDBACK_ACTION])
+      .limit(1000)
+      .get();
+    const byTenant = new Map<string, SupportSignalEvent[]>();
+    for (const doc of snap.docs) {
+      const d = doc.data() as {
+        action?: string;
+        createdAt?: Timestamp;
+        detail?: {
+          tenantId?: string;
+          category?: string;
+          errorCode?: string | null;
+          feedbackHelpful?: boolean | null;
+        };
+      };
+      const detail = d.detail ?? {};
+      const tenantId = typeof detail.tenantId === 'string' ? detail.tenantId : 'network';
+      const list = byTenant.get(tenantId) ?? [];
+      list.push({
+        category: typeof detail.category === 'string' ? detail.category : 'out-of-scope',
+        errorCode: d.action === SUPPORT_AUDIT_ACTION ? detail.errorCode ?? null : null,
+        feedbackHelpful: d.action === SUPPORT_FEEDBACK_ACTION ? detail.feedbackHelpful ?? null : null,
+        createdAtMs: d.createdAt?.toMillis?.() ?? 0,
+        tenantId,
+      });
+      byTenant.set(tenantId, list);
+    }
+    if (byTenant.size === 0) byTenant.set('network', []);
+    const periodKey = periodStart.toISOString().slice(0, 10);
+    for (const [tenantId, events] of byTenant) {
+      const signals = aggregateSupportSignals(
+        events,
+        periodStart.getTime(),
+        periodEnd.getTime(),
+        SUPPORT_MIN_CELL,
+      );
+      const brief = buildDeveloperBrief({
+        tenantId,
+        periodStart,
+        periodEnd,
+        signals,
+        generatedAt: new Date(),
+      });
+      const ref = db.collection('developerSuggestions').doc(`support-brief-${tenantId}-${periodKey}`);
+      await ref.set(brief);
+      await db.collection(ACCESS_EVENTS).add(
+        buildAccessEvent(
+          {
+            subjectId: tenantId,
+            actorId: 'system:aggregateSupportInsights',
+            action: 'publishSupportBrief',
+            resourceType: 'developerSuggestions',
+            resourceId: ref.id,
+            actingRole: 'system',
+            actingGrantId: null,
+            purpose: 'publish support brief',
+            correlationId: ref.id,
+            result: 'allowed',
+            detail: { tenantId, totalEvents: signals.totalEvents },
+          },
+          FieldValue.serverTimestamp(),
+        ),
+      );
     }
   },
 );

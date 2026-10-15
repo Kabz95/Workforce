@@ -420,6 +420,48 @@
         }
       ],
       "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "supervisionSessions",
+      "fields": [
+        {
+          "fieldPath": "sharedWith",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "mentorships",
+      "fields": [
+        {
+          "fieldPath": "participantIds",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
+    },
+    {
+      "collectionGroup": "mentorships",
+      "fields": [
+        {
+          "fieldPath": "sharedWith",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "tenantId",
+          "order": "ASCENDING"
+        }
+      ],
+      "queryScope": "COLLECTION"
     }
   ]
 }

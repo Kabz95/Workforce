@@ -281,17 +281,55 @@ service cloud.firestore {
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
+    // ---- Mentorships (Phase 2 completion) ----
+    // Model:
+    // - A mentorship is a PAIR: exactly two participants. The caller
+    //   must be one of them to create it.
+    // - participantIds + tenantId are immutable on client update;
+    //   participants may edit notes only.
+    // - Either participant may end (delete) the mentorship.
+    // - sharedWith = consent-based readers (mentorships is an
+    //   ALLOWED_SHARE_TARGET; grantAccess verifies participation).
+    //   Readers are participants OR consented readers, tenant-scoped.
+    match /mentorships/{mentorshipId} {
+      allow get: if signedIn() && storedTenantMatches(resource.data)
+        && (uid() in resource.data.participantIds || isSharedWith(resource.data));
+      allow list: if signedIn() && storedTenantMatches(resource.data)
+        && (uid() in resource.data.participantIds || isSharedWith(resource.data));
+      allow create: if signedIn()
+        && uid() in request.resource.data.participantIds
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.participantIds.size() == 2
+        && request.resource.data.participantIds[0] != request.resource.data.participantIds[1]
+        && request.resource.data.get('sharedWith', []) == []
+        && request.resource.data.notes is string;
+      allow update: if signedIn() && uid() in resource.data.participantIds
+        && storedTenantMatches(resource.data)
+        && incomingTenantMatches(request.resource.data)
+        && request.resource.data.tenantId == resource.data.tenantId
+        && request.resource.data.participantIds == resource.data.participantIds
+        && onlyKeysChange(['notes']);
+      allow delete: if signedIn() && uid() in resource.data.participantIds
+        && storedTenantMatches(resource.data);
+    }
+
     // ---- Consents (consent grants) ----
     match /consents/{consentId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.granterId || uid() == resource.data.granteeId);
+      // .get(field, null) in list rules: a list query does not bind
+      // resource.data per document, so a direct field access on a field
+      // the query does not constrain ERRORS ("Property X is undefined")
+      // and denies the whole query. .get() yields null, so the comparison
+      // is false — the exact same permission, with no error.
+      // Rules are not filters.
       allow list: if signedIn()
-        && (uid() == resource.data.granterId || uid() == resource.data.granteeId);
+        && (uid() == resource.data.get('granterId', null) || uid() == resource.data.get('granteeId', null));
       allow create: if signedIn()
         && uid() == request.resource.data.granterId
         && incomingTenantMatches(request.resource.data)
         && request.resource.data.resourceType in [
-          'firstContactForms', 'pathwaySteps', 'certificationNavigation', 'supervisionSessions']
+          'firstContactForms', 'pathwaySteps', 'certificationNavigation', 'supervisionSessions', 'mentorships']
         && request.resource.data.scope == 'read:' + request.resource.data.resourceType
         && request.resource.data.granteeId is string
         && request.resource.data.resourceId is string
@@ -394,8 +432,10 @@ service cloud.firestore {
     match /complaints/{complaintId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.complainantId || canAuthorise());
+      // .get() in list rules: see consents — an unconstrained field
+      // access errors on list evaluation; .get() makes it false instead.
       allow list: if signedIn()
-        && (uid() == resource.data.complainantId || (canAuthorise() && storedTenantMatches(resource.data)));
+        && (uid() == resource.data.get('complainantId', null) || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create: if signedIn()
         && uid() == request.resource.data.complainantId
         && incomingTenantMatches(request.resource.data)
@@ -461,8 +501,10 @@ service cloud.firestore {
       allow get: if signedIn()
         && (uid() == resource.data.subjectId
           || (isPrivacyLead() && storedTenantMatches(resource.data)));
+      // .get() in list rules: see consents — an unconstrained field
+      // access errors on list evaluation; .get() makes it false instead.
       allow list: if signedIn()
-        && (uid() == resource.data.subjectId || (isPrivacyLead() && storedTenantMatches(resource.data)));
+        && (uid() == resource.data.get('subjectId', null) || (isPrivacyLead() && storedTenantMatches(resource.data)));
       allow create, update, delete: if false;
     }
 
@@ -475,6 +517,18 @@ service cloud.firestore {
     match /deletionRequests/{requestId} {
       allow get: if signedIn() && uid() == resource.data.ownerId;
       allow list: if signedIn() && uid() == resource.data.ownerId;
+      allow create, update, delete: if false;
+    }
+
+    // ---- Developer suggestions (Phase 3, P3.2 — server-written draft
+    // briefs from aggregate support signals; counts only, no raw text,
+    // no identities). Network roles read cross-tenant; hub roles read
+    // their own tenant's briefs. Same shape as aggregates. ----
+    match /developerSuggestions/{briefId} {
+      allow get, list: if signedIn()
+        && (hasAnyRole(['analyst', 'council', 'backboneLead'])
+          || (storedTenantMatches(resource.data)
+            && hasAnyRole(['steeringCircle', 'hubCoordinator', 'privacyLead'])));
       allow create, update, delete: if false;
     }
 

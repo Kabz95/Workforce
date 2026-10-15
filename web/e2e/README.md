@@ -12,7 +12,7 @@ per step in the HTML report.
 # Terminal 1 — build functions (the emulator serves the compiled lib/)
 # + start emulators (from the repo root)
 cd functions && npm run build && cd ..
-firebase emulators:start --project demo-workforce --only auth,firestore,functions
+firebase emulators:start --project demo-workforce --only auth,firestore,functions,storage
 
 # Terminal 2 — from web/
 npm run test:e2e

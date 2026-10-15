@@ -54,10 +54,13 @@ jobs:
       - name: Kernel tests (no emulator needed)
         run: npm --prefix functions run test:kernel
 
+      - name: Support agent pure tests (no emulator needed)
+        run: npm --prefix functions run test:support
+
       - name: Emulator suites — rules + callable (retry once for the first-start trigger race)
         run: |
           for attempt in 1 2; do
-            if firebase emulators:exec --project demo-workforce --only auth,firestore,functions \
+            if firebase emulators:exec --project demo-workforce --only auth,firestore,functions,storage \
               "npm --prefix functions run test:rules && npm --prefix functions run test:callable"; then
               echo "Emulator suites passed on attempt $attempt."
               break
@@ -76,7 +79,7 @@ jobs:
       - name: Playwright end-to-end walkthrough (retry once against a fresh emulator)
         run: |
           for attempt in 1 2; do
-            if firebase emulators:exec --project demo-workforce --only auth,firestore,functions \
+            if firebase emulators:exec --project demo-workforce --only auth,firestore,functions,storage \
               "npm --prefix web run test:e2e"; then
               echo "Playwright walkthrough passed on attempt $attempt."
               break

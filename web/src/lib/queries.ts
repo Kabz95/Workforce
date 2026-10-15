@@ -17,6 +17,7 @@ import { db, functions } from './firebase';
 import type {
   AccessEvent,
   AdaptationLog,
+  Aggregate,
   Assignment,
   CertificationNavigation,
   Complaint,
@@ -29,12 +30,13 @@ import type {
   GovernanceDecision,
   Handoff,
   Membership,
+  Mentorship,
   Opportunity,
   OpportunityApplication,
   PathwayStep,
   ReadinessAssessment,
   RoleGrant,
-  Aggregate,
+  SupervisionSession,
   WithId,
   Worker,
 } from './types';
@@ -235,6 +237,9 @@ const SHAREABLE_COLLECTIONS: Record<string, string> = {
   // Phase 2: supervision sessions are shareable (the supervisor reads
   // ONLY through a live worker consent — see the rules block).
   supervisionSessions: 'supervisionSessions',
+  // Phase 2 completion: mentorships are shareable the same way —
+  // participants OR consented readers, tenant-scoped.
+  mentorships: 'mentorships',
 };
 
 const grantAccess = httpsCallable(functions, 'grantAccess');
@@ -248,6 +253,10 @@ const createHandoffFn = httpsCallable(functions, 'createHandoff');
 const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
 const closeHandoffFn = httpsCallable(functions, 'closeHandoff');
 const inviteMemberFn = httpsCallable(functions, 'inviteMember');
+const createSupervisionSessionFn = httpsCallable(functions, 'createSupervisionSession');
+const createMentorshipFn = httpsCallable(functions, 'createMentorship');
+const askSupportAgentFn = httpsCallable(functions, 'askSupportAgent');
+const submitSupportFeedbackFn = httpsCallable(functions, 'submitSupportFeedback');
 
 export async function grantConsent(
   granterId: string,
@@ -513,6 +522,100 @@ export async function listMyHandoffs(uid: string, tenantId: string): Promise<Wit
   return [...byId.values()];
 }
 
+/**
+ * Create a supervision session through the Kernel-governed callable.
+ * The caller is the session owner (the worker); the supervisor is
+ * named by UID and must hold a live supervisor grant in the tenant.
+ */
+export async function createSupervisionSession(
+  data: { supervisorId: string; tenantId: string; notes?: string; dateMs?: number },
+  acting?: ActingInput,
+): Promise<string> {
+  const result = await createSupervisionSessionFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'supervision reflection',
+    idempotencyKey: newIdempotencyKey(),
+  });
+  return (result.data as { sessionId: string }).sessionId;
+}
+
+/**
+ * Create a mentorship pair through the Kernel-governed callable.
+ * The caller must be one of the two participants.
+ */
+export async function createMentorship(
+  data: { participantIds: [string, string]; tenantId: string; notes?: string },
+  acting?: ActingInput,
+): Promise<string> {
+  const result = await createMentorshipFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'peer mentorship',
+    idempotencyKey: newIdempotencyKey(),
+  });
+  return (result.data as { mentorshipId: string }).mentorshipId;
+}
+
+/** Supervision sessions the caller owns (worker view). */
+export async function listMySupervisionSessions(uid: string, tenantId: string): Promise<WithId<SupervisionSession>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'supervisionSessions'),
+      where('ownerId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<SupervisionSession>(d));
+}
+
+/** Supervision sessions shared WITH the caller (supervisor view — consent only). */
+export async function listSharedSupervisionSessions(uid: string, tenantId: string): Promise<WithId<SupervisionSession>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'supervisionSessions'),
+      where('sharedWith', 'array-contains', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<SupervisionSession>(d));
+}
+
+/** Mentorships where the caller is a participant. */
+export async function listMyMentorships(uid: string, tenantId: string): Promise<WithId<Mentorship>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'mentorships'),
+      where('participantIds', 'array-contains', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<Mentorship>(d));
+}
+
+/** Assignments where the caller is the worker or the holder (picker source). */
+export async function listMyAssignments(uid: string, tenantId: string): Promise<WithId<Assignment>[]> {
+  const asWorker = await getDocs(
+    query(
+      collection(db, 'assignments'),
+      where('workerId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const asHolder = await getDocs(
+    query(
+      collection(db, 'assignments'),
+      where('holderId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const byId = new Map<string, WithId<Assignment>>();
+  for (const d of [...asWorker.docs, ...asHolder.docs]) byId.set(d.id, toDoc<Assignment>(d));
+  return [...byId.values()];
+}
+
 /** Consents where the caller is the grantee (what was shared WITH me). */
 export async function listConsentsReceived(uid: string, tenantId: string): Promise<WithId<Consent>[]> {
   const q = query(
@@ -749,4 +852,123 @@ export async function listAdaptationLogs(tenantId: string): Promise<WithId<Adapt
   const q = query(collection(db, 'adaptationLogs'), where('tenantId', '==', tenantId));
   const snap = await getDocs(q);
   return snap.docs.map((d) => toDoc<AdaptationLog>(d));
+}
+
+export interface SupportSource {
+  id: string;
+  title: string;
+  route: string;
+  version: string;
+}
+
+export interface SupportResource {
+  name: string;
+  detail: string;
+}
+
+export interface SupportAnswerResult {
+  answer: string;
+  category: string;
+  outcome: string;
+  sources: SupportSource[];
+  route: string;
+  vertexUsed: boolean;
+  resources: SupportResource[];
+}
+
+/**
+ * Ask the app support assistant (Phase 3, P3.1). Record-blind: the
+ * server never receives or stores the question text beyond answering
+ * it — the audit event carries category + outcome only. The client
+ * sends the question and an optional sanitized error code (no stack
+ * traces, no record content).
+ */
+export async function askSupportAgent(
+  question: string,
+  acting?: ActingInput & { errorCode?: string },
+): Promise<SupportAnswerResult> {
+  const result = await askSupportAgentFn({
+    question,
+    errorCode: acting?.errorCode ?? null,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+  });
+  return result.data as SupportAnswerResult;
+}
+
+/** Helpful / not-helpful for a support answer. Category + boolean only — no text. */
+export async function submitSupportFeedback(
+  helpful: boolean,
+  category: string,
+  acting?: ActingInput,
+): Promise<void> {
+  await submitSupportFeedbackFn({
+    helpful,
+    category,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+  });
+}
+
+// --- Phase 3: Supervisor / Mentor / PrivacyLead dashboards --
+// Every query stays inside the caller's own data or what the rules
+// explicitly permit for the acting role:
+// - Supervision sessions: sharedWith only (consent), never via
+//   supervisorId. The supervisorId link confers no read.
+// - Mentorships: participantIds (the relationship) or sharedWith
+//   (consent). No hub-wide mentorship view exists.
+// - Assignments: the caller's own assignments (holderId), filtered
+//   to the role client-side — no cross-holder listing.
+// - Access events: privacyLead hub-wide (rules: isPrivacyLead +
+//   tenant). This is audit oversight, not an activity feed: the
+//   dashboard shows aggregates + recent denials, never a live feed.
+// - Complaints: privacyLead (canAuthorise + tenant) — the queue
+//   the privacy lead is designated to handle.
+// - There is deliberately NO hub-wide consent listing: the consent
+//   rules allow only granter / grantee reads. Privacy oversight of
+//   consent is via access-event aggregates + published aggregates,
+//   never by enumerating other people's consent records.
+//
+// listSharedSupervisionSessions + listMyMentorships live above (Engineer 3's
+// implementations from the supervision/mentorship branch); the four
+// helpers below are the dashboards branch's additions.
+
+/** The caller's own assignments for one role (supervisor / mentor). */
+export async function listMyAssignmentsForRole(
+  uid: string,
+  tenantId: string,
+  role: 'mentor' | 'navigator' | 'supervisor' | 'facilitator',
+): Promise<WithId<Assignment>[]> {
+  const q = query(
+    collection(db, 'assignments'),
+    where('holderId', '==', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Assignment>(d)).filter((a) => a.role === role);
+}
+
+/** Mentorships shared WITH the caller by consent (not a participant). */
+export async function listSharedMentorships(uid: string, tenantId: string): Promise<WithId<Mentorship>[]> {
+  const q = query(
+    collection(db, 'mentorships'),
+    where('sharedWith', 'array-contains', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Mentorship>(d));
+}
+
+/** All access events in the hub (privacyLead audit oversight). */
+export async function listHubAccessEvents(tenantId: string): Promise<WithId<AccessEvent>[]> {
+  const q = query(collection(db, 'accessEvents'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<AccessEvent>(d));
+}
+
+/** All complaints in the hub (privacyLead queue). */
+export async function listHubComplaints(tenantId: string): Promise<WithId<Complaint>[]> {
+  const q = query(collection(db, 'complaints'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Complaint>(d));
 }

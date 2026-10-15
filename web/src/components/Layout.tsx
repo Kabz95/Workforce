@@ -10,12 +10,15 @@ const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/pathway', label: 'Pathway', roles: ['worker', 'navigator'] },
   { to: '/consents', label: 'Consents', roles: ['worker'] },
   { to: '/handoffs', label: 'Handoffs', roles: ['worker', 'navigator', 'hubCoordinator', 'supervisor', 'mentor'] },
+  { to: '/supervision', label: 'Supervision', roles: ['worker', 'supervisor'] },
+  { to: '/mentorships', label: 'Mentorships', roles: ['worker', 'mentor'] },
   { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubCoordinator'] },
   { to: '/opportunities', label: 'Opportunities' },
   { to: '/governance', label: 'Governance' },
-  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council'] },
+  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead'] },
   { to: '/audit', label: 'My Audit Log' },
   { to: '/grants', label: 'My Roles & Grants' },
+  { to: '/support', label: 'Support' },
 ];
 
 export default function Layout() {

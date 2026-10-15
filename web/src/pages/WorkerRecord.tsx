@@ -257,7 +257,7 @@ export default function WorkerRecord() {
           Deletion removes your records and anonymises anything shared — it cannot be undone.
         </p>
         <div className="row">
-          <button type="button" onClick={exportMyData}>Export my data</button>
+          <button type="button" data-testid="export-my-data" onClick={exportMyData}>Export my data</button>
           <button type="button" data-testid="delete-all-data" className="danger" onClick={deleteMyData}>Delete all my data</button>
         </div>
       </section>
