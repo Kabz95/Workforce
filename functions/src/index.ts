@@ -42,6 +42,17 @@ import {
   type DeletionPlanStep,
 } from './kernel';
 import {
+  aggregateSupportSignals,
+  buildDeveloperBrief,
+  generateSupportAnswer,
+  isSupportCategory,
+  SUPPORT_AGGREGATION_WINDOW_DAYS,
+  SUPPORT_MAX_QUESTION_CHARS,
+  SUPPORT_MIN_CELL,
+  SUPPORT_RATE_LIMIT_PER_HOUR,
+  type SupportSignalEvent,
+} from './supportAgent';
+import {
   callerFrom,
   resolveCommandContext,
   writeAccessEventInTx,
@@ -1036,6 +1047,242 @@ export const onConsentRevoke = onDocumentUpdated(
         ),
       );
       await batch.commit();
+    }
+  },
+);
+
+/**
+ * Support agent callables + developer-suggestions job (Phase 3, P3.1/P3.2).
+ *
+ * askSupportAgent — Kernel-governed, record-blind app support.
+ * Governance (see COMMAND_MATRIX 'askSupport'): authenticated caller +
+ * validated purpose + best-effort acting grant + server-authored audit
+ * (category/outcome only — NEVER the verbatim question). authorizeCommand
+ * is deliberately NOT used: it denies ungranted callers, and support
+ * must serve bare persons (e.g. invitation problems).
+ *
+ * The callable never reads worker records, never mutates anything, and
+ * never stores a transcript. Rate limit: 30 questions / caller / hour.
+ */
+
+const SUPPORT_AUDIT_ACTION = 'askSupport';
+const SUPPORT_FEEDBACK_ACTION = 'supportFeedback';
+
+/** Sanitized error code only (e.g. auth/invalid-credential). No stack traces, no messages. */
+function validErrorCode(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,63}$/.test(value);
+}
+
+async function supportRateLimitExceeded(uid: string): Promise<boolean> {
+  const hourAgo = Date.now() - 60 * 60 * 1000;
+  const snap = await db
+    .collection(ACCESS_EVENTS)
+    .where('actorId', '==', uid)
+    .limit(100)
+    .get();
+  let count = 0;
+  for (const doc of snap.docs) {
+    const d = doc.data() as { action?: string; createdAt?: Timestamp };
+    if (d.action !== SUPPORT_AUDIT_ACTION) continue;
+    const ms = d.createdAt?.toMillis?.() ?? 0;
+    if (ms >= hourAgo) count += 1;
+  }
+  return count >= SUPPORT_RATE_LIMIT_PER_HOUR;
+}
+
+export const askSupportAgent = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    question?: unknown;
+    errorCode?: unknown;
+  } & ActingInput;
+  if (typeof data.question !== 'string' || data.question.trim().length === 0) {
+    throw new HttpsError('invalid-argument', 'question is required.');
+  }
+  if (data.question.length > SUPPORT_MAX_QUESTION_CHARS) {
+    throw new HttpsError(
+      'invalid-argument',
+      `question must be at most ${SUPPORT_MAX_QUESTION_CHARS} characters.`,
+    );
+  }
+  const errorCode = validErrorCode(data.errorCode) ? data.errorCode : null;
+  // Best-effort acting grant (highRisk false): bare persons pass.
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
+    false,
+    false,
+  );
+  if (await supportRateLimitExceeded(caller.uid)) {
+    throw new HttpsError('resource-exhausted', 'Too many support questions this hour. Try again later.');
+  }
+  const tenantId = ctx.actingGrant?.tenantId ?? caller.claimsTenantId ?? 'network';
+  const answer = await generateSupportAnswer({
+    question: data.question,
+    actingRole: ctx.actingGrant?.role ?? null,
+  });
+  // Audit: category + outcome + sources only. The question text is
+  // NEVER written — not here, not anywhere.
+  await db.collection(ACCESS_EVENTS).add(
+    buildAccessEvent(
+      {
+        subjectId: caller.uid,
+        actorId: caller.uid,
+        action: SUPPORT_AUDIT_ACTION,
+        resourceType: 'support',
+        resourceId: `support:${caller.uid}:${Date.now()}`,
+        actingRole: ctx.actingGrant?.role ?? 'none',
+        actingGrantId: ctx.actingGrant?.id ?? null,
+        purpose: 'app support',
+        correlationId: `askSupport:${caller.uid}:${Date.now()}`,
+        result: 'allowed',
+        detail: {
+          tenantId,
+          category: answer.category,
+          outcome: answer.outcome,
+          vertexUsed: answer.vertexUsed,
+          sources: answer.sources.map((s) => s.id),
+          errorCode,
+        },
+      },
+      FieldValue.serverTimestamp(),
+    ),
+  );
+  return {
+    answer: answer.answer,
+    category: answer.category,
+    outcome: answer.outcome,
+    sources: answer.sources.map((s) => ({ id: s.id, title: s.title, route: s.route, version: s.version })),
+    route: answer.route,
+    vertexUsed: answer.vertexUsed,
+    resources: answer.resources,
+  };
+});
+
+/**
+ * submitSupportFeedback — helpful / not-helpful for a support answer.
+ * Writes an audit event with category + boolean only. No text.
+ */
+export const submitSupportFeedback = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    helpful?: unknown;
+    category?: unknown;
+  } & ActingInput;
+  if (typeof data.helpful !== 'boolean') {
+    throw new HttpsError('invalid-argument', 'helpful must be a boolean.');
+  }
+  if (!isSupportCategory(data.category)) {
+    throw new HttpsError('invalid-argument', 'category must be a valid support category.');
+  }
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: caller.claimsTenantId ?? '' },
+    false,
+    false,
+  );
+  const tenantId = ctx.actingGrant?.tenantId ?? caller.claimsTenantId ?? 'network';
+  await db.collection(ACCESS_EVENTS).add(
+    buildAccessEvent(
+      {
+        subjectId: caller.uid,
+        actorId: caller.uid,
+        action: SUPPORT_FEEDBACK_ACTION,
+        resourceType: 'support',
+        resourceId: `support-feedback:${caller.uid}:${Date.now()}`,
+        actingRole: ctx.actingGrant?.role ?? 'none',
+        actingGrantId: ctx.actingGrant?.id ?? null,
+        purpose: 'app support',
+        correlationId: `supportFeedback:${caller.uid}:${Date.now()}`,
+        result: 'allowed',
+        detail: { tenantId, category: data.category, feedbackHelpful: data.helpful },
+      },
+      FieldValue.serverTimestamp(),
+    ),
+  );
+  return { ok: true };
+});
+
+/**
+ * aggregateSupportInsights — weekly developer brief (P3.2).
+ * Reads askSupport + supportFeedback audit events, groups by tenant,
+ * applies the ≥5 cell floor, and writes one DRAFT brief per tenant
+ * (plus a 'network' brief for events without a tenant) to
+ * developerSuggestions. Counts only — no raw text, no identities.
+ * Doc ID is period-based, so re-runs overwrite the same brief.
+ */
+export const aggregateSupportInsights = onSchedule(
+  { schedule: 'every monday 04:00', timeZone: 'America/Toronto' },
+  async () => {
+    const periodEnd = new Date();
+    const periodStart = new Date(
+      periodEnd.getTime() - SUPPORT_AGGREGATION_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const snap = await db
+      .collection(ACCESS_EVENTS)
+      .where('action', 'in', [SUPPORT_AUDIT_ACTION, SUPPORT_FEEDBACK_ACTION])
+      .limit(1000)
+      .get();
+    const byTenant = new Map<string, SupportSignalEvent[]>();
+    for (const doc of snap.docs) {
+      const d = doc.data() as {
+        action?: string;
+        createdAt?: Timestamp;
+        detail?: {
+          tenantId?: string;
+          category?: string;
+          errorCode?: string | null;
+          feedbackHelpful?: boolean | null;
+        };
+      };
+      const detail = d.detail ?? {};
+      const tenantId = typeof detail.tenantId === 'string' ? detail.tenantId : 'network';
+      const list = byTenant.get(tenantId) ?? [];
+      list.push({
+        category: typeof detail.category === 'string' ? detail.category : 'out-of-scope',
+        errorCode: d.action === SUPPORT_AUDIT_ACTION ? detail.errorCode ?? null : null,
+        feedbackHelpful: d.action === SUPPORT_FEEDBACK_ACTION ? detail.feedbackHelpful ?? null : null,
+        createdAtMs: d.createdAt?.toMillis?.() ?? 0,
+        tenantId,
+      });
+      byTenant.set(tenantId, list);
+    }
+    if (byTenant.size === 0) byTenant.set('network', []);
+    const periodKey = periodStart.toISOString().slice(0, 10);
+    for (const [tenantId, events] of byTenant) {
+      const signals = aggregateSupportSignals(
+        events,
+        periodStart.getTime(),
+        periodEnd.getTime(),
+        SUPPORT_MIN_CELL,
+      );
+      const brief = buildDeveloperBrief({
+        tenantId,
+        periodStart,
+        periodEnd,
+        signals,
+        generatedAt: new Date(),
+      });
+      const ref = db.collection('developerSuggestions').doc(`support-brief-${tenantId}-${periodKey}`);
+      await ref.set(brief);
+      await db.collection(ACCESS_EVENTS).add(
+        buildAccessEvent(
+          {
+            subjectId: tenantId,
+            actorId: 'system:aggregateSupportInsights',
+            action: 'publishSupportBrief',
+            resourceType: 'developerSuggestions',
+            resourceId: ref.id,
+            actingRole: 'system',
+            actingGrantId: null,
+            purpose: 'publish support brief',
+            correlationId: ref.id,
+            result: 'allowed',
+            detail: { tenantId, totalEvents: signals.totalEvents },
+          },
+          FieldValue.serverTimestamp(),
+        ),
+      );
     }
   },
 );

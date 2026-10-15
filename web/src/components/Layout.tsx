@@ -18,6 +18,7 @@ const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council'] },
   { to: '/audit', label: 'My Audit Log' },
   { to: '/grants', label: 'My Roles & Grants' },
+  { to: '/support', label: 'Support' },
 ];
 
 export default function Layout() {

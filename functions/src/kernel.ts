@@ -504,6 +504,9 @@ export const PURPOSE_TAXONOMY: readonly string[] = [
   'person record setup',
   'invite a member',
   'claim an invitation',
+  // Support agent (Phase 3, P3.1/P3.2): record-blind, actionless.
+  'app support',
+  'publish support brief',
 ];
 
 /** True when the purpose is one of the taxonomy's canonical phrases. */
@@ -540,7 +543,8 @@ export type CommandName =
   | 'inviteMember'
   | 'getMyGrants'
   | 'createSupervisionSession'
-  | 'createMentorship';
+  | 'createMentorship'
+  | 'askSupport';
 
 export interface CommandMatrixEntry {
   /**
@@ -644,6 +648,11 @@ export const COMMAND_MATRIX: Readonly<Record<CommandName, CommandMatrixEntry>> =
     roles: ['worker', 'mentor'],
     highRisk: false,
     note: 'Caller must be a participant; the other participant must hold a live mentor or worker grant in the tenant. A mentorship is a pair: exactly two participants.',
+  },
+  askSupport: {
+    roles: 'any',
+    highRisk: false,
+    note: 'Record-blind app support (Phase 3). Any authenticated person, including bare persons with no grants (e.g. invitation problems). No record access, no mutation, no transcript storage. The handler does NOT run authorizeCommand (which denies ungranted callers); governance is: authenticated caller + validated purpose + best-effort acting grant + server-authored audit (category/outcome only, never the verbatim question).',
   },
 };
 

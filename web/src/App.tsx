@@ -16,6 +16,7 @@ import AuditLog from './pages/AuditLog';
 import MyGrants from './pages/MyGrants';
 import Supervision from './pages/Supervision';
 import Mentorships from './pages/Mentorships';
+import Support from './pages/Support';
 
 export default function App() {
   return (
@@ -124,6 +125,14 @@ export default function App() {
             element={
               <ProtectedRoute roles={['worker', 'mentor']}>
                 <Mentorships />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/support"
+            element={
+              <ProtectedRoute>
+                <Support />
               </ProtectedRoute>
             }
           />

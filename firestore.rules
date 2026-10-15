@@ -510,6 +510,18 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    // ---- Developer suggestions (Phase 3, P3.2 — server-written draft
+    // briefs from aggregate support signals; counts only, no raw text,
+    // no identities). Network roles read cross-tenant; hub roles read
+    // their own tenant's briefs. Same shape as aggregates. ----
+    match /developerSuggestions/{briefId} {
+      allow get, list: if signedIn()
+        && (hasAnyRole(['analyst', 'council', 'backboneLead'])
+          || (storedTenantMatches(resource.data)
+            && hasAnyRole(['steeringCircle', 'hubCoordinator', 'privacyLead'])));
+      allow create, update, delete: if false;
+    }
+
     // ---- Deny everything else ----
     match /{document=**} {
       allow read, write: if false;
