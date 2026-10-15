@@ -111,7 +111,12 @@ async function callFn(name, token, data) {
   const body = await res.json();
   if (body.error) {
     const err = new Error(body.error.message || 'callable error');
-    err.code = body.error.status || body.error.code || 'unknown';
+    // The callable wire format carries the canonical status
+    // (PERMISSION_DENIED); the client SDKs expose the kebab-case
+    // Functions code (permission-denied). Normalise here so the
+    // assertions match the client-visible contract.
+    const raw = body.error.status || body.error.code || 'unknown';
+    err.code = String(raw).toLowerCase().replace(/_/g, '-');
     throw err;
   }
   return body.result;

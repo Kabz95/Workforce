@@ -1328,14 +1328,21 @@ export const ensureMyPersonFn = onCall(async (request) => {
   // variable would duplicate entries across retries.
   const result = await db.runTransaction(async (tx) => {
     const claimedInTx: Array<{ grantId: string; role: string; tenantId: string }> = [];
+    // ALL READS BEFORE ALL WRITES — Firestore transactions reject a
+    // read that follows a write. Both the pending-invitation query and
+    // the persons-doc read happen here, up front.
+    const pendingSnap =
+      emailLower.length > 0
+        ? await tx.get(
+            db.collection(GRANTS)
+              .where('granteeEmail', '==', emailLower)
+              .where('status', '==', 'pending'),
+          )
+        : null;
+    const snap = await tx.get(ref);
     // Claim pending invitations for this email (re-checked inside the
     // transaction so concurrent sign-ins cannot double-claim).
-    if (emailLower.length > 0) {
-      const pendingSnap = await tx.get(
-        db.collection(GRANTS)
-          .where('granteeEmail', '==', emailLower)
-          .where('status', '==', 'pending'),
-      );
+    if (pendingSnap) {
       for (const doc of pendingSnap.docs) {
         const inv = doc.data() as {
           role?: string;
@@ -1379,7 +1386,6 @@ export const ensureMyPersonFn = onCall(async (request) => {
         });
       }
     }
-    const snap = await tx.get(ref);
     if (snap.exists) {
       // Adopt the claimed tenant onto a bare record (tenantId null)
       // so the persons doc reflects the user's organisation.
