@@ -159,7 +159,11 @@ before(async () => {
     );
   }
   admin = (await import('firebase-admin')).default;
-  admin.initializeApp({ projectId: PROJECT });
+  // The Storage emulator's default bucket for this project is
+  // `<project-id>.appspot.com`. Without storageBucket, bucket() with
+  // no name throws storage/invalid-argument — the export happy-path
+  // test downloads the bundle via admin.storage().bucket().
+  admin.initializeApp({ projectId: PROJECT, storageBucket: `${PROJECT}.appspot.com` });
   db = admin.firestore();
   auth = admin.auth();
 });
