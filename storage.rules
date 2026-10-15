@@ -1,0 +1,18 @@
+rules_version = '2';
+
+// Cloud Storage rules — deny-by-default.
+//
+// The app never reads or writes Storage through the client SDK:
+//  - Exports are written by the requestExport Cloud Function (Admin SDK)
+//    and downloaded through a 7-day signed URL.
+//  - The deletion job's pre-deletion export uses the same path.
+// There is no legitimate direct client access to the bucket, so every
+// client read/write is denied. The bucket is reachable only via the
+// server and signed URLs.
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

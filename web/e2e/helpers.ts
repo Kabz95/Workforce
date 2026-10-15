@@ -80,6 +80,48 @@ async function poll<T>(fn: () => Promise<T>, until: (v: T) => boolean, timeoutMs
   }
 }
 
+/** Seed a pending invitation (production inviteMember shape) for an email. */
+export async function seedPendingInvitation(
+  email: string,
+  role: string,
+  tenantId = 'hub-1',
+): Promise<string> {
+  const ref = await adminDb().collection('roleGrants').add({
+    granteeEmail: email,
+    granteeId: '',
+    role,
+    scopeType: role === 'worker' ? 'self' : 'hub',
+    scopeId: role === 'worker' ? email : tenantId,
+    tenantId,
+    status: 'pending',
+    validFrom: new Date(Date.now() - 1000),
+    validUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    grantedBy: 'e2e-seed',
+    basis: 'playwright-e2e',
+    needsReview: false,
+  });
+  return ref.id;
+}
+
+/** Seed an active assignment (Admin SDK — assignments are server-written). */
+export async function seedAssignment(
+  workerUid: string,
+  holderUid: string,
+  role: 'mentor' | 'navigator' | 'supervisor' | 'facilitator',
+  tenantId = 'hub-1',
+): Promise<string> {
+  const ref = await adminDb().collection('assignments').add({
+    workerId: workerUid,
+    holderId: holderUid,
+    role,
+    tenantId,
+    status: 'active',
+    startedAt: new Date(),
+    endedAt: null,
+  });
+  return ref.id;
+}
+
 /** Resolve a signed-up user's uid: the persons doc id for their email (polls: the claim lands async). */
 export async function getUidByEmail(email: string, timeoutMs = 15_000): Promise<string> {
   const store = adminDb();

@@ -1075,6 +1075,218 @@ export const closeHandoffFn = onCall(async (request) => {
 });
 
 // ---------------------------------------------------------------------------
+// createSupervisionSession — the worker creates their own supervision
+// session record, naming their supervisor.
+//
+// The worker owns the session record (ownerId = caller). The supervisor
+// is a LINK, not an access grant: supervisorId confers no read by
+// itself. The supervisor reads ONLY through a live worker consent
+// (grantAccess), exactly as the rules enforce. The supervisor must
+// hold a live supervisor grant in the tenant, so a session cannot
+// name an arbitrary person as supervisor.
+// ---------------------------------------------------------------------------
+
+export const createSupervisionSessionFn = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    supervisorId?: string;
+    tenantId?: string;
+    notes?: string;
+    dateMs?: number;
+    purpose?: string;
+    actingGrantId?: string | null;
+    actingRole?: string | null;
+    idempotencyKey?: string;
+  };
+  if (!data.supervisorId || !data.tenantId) {
+    throw new HttpsError('invalid-argument', 'supervisorId and tenantId are required.');
+  }
+  if (data.notes !== undefined && (typeof data.notes !== 'string' || data.notes.length > 2000)) {
+    throw new HttpsError('invalid-argument', 'notes must be a string of at most 2000 characters.');
+  }
+  if (data.dateMs !== undefined && (typeof data.dateMs !== 'number' || !Number.isFinite(data.dateMs))) {
+    throw new HttpsError('invalid-argument', 'dateMs must be a finite number (epoch ms).');
+  }
+  const purpose = validatePurpose(data.purpose, 'supervision reflection');
+  const supervisorId = data.supervisorId;
+  const sessionTenantId = data.tenantId;
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: sessionTenantId },
+    false,
+  );
+  const actingGrant = ctx.actingGrant;
+  if (!actingGrant || !commandAllowsRole('createSupervisionSession', actingGrant.role)) {
+    throw new HttpsError('permission-denied', 'Only a live worker grant may create a supervision session.');
+  }
+  const decision = authorizeCommand({
+    authenticated: true,
+    uid: caller.uid,
+    actingGrant,
+    claimsRoles: caller.claimsRoles,
+    useClaimsFallback: false,
+    command: 'createSupervisionSession',
+    highRisk: false,
+    scope: { tenantId: sessionTenantId, scopeType: 'self', scopeId: caller.uid },
+    relationship: 'owner',
+    relationshipRequired: true,
+    purpose,
+    consentRequired: false,
+    consentLive: null,
+  });
+  if (!decision.allowed) throw new HttpsError('permission-denied', decision.reason);
+  // The supervisor must hold a live supervisor grant in this tenant.
+  const supervisorGrants = await liveGrantsFor(supervisorId);
+  const supervisorOk = supervisorGrants.some(
+    (g) => g.role === 'supervisor' && g.tenantId === sessionTenantId,
+  );
+  if (!supervisorOk) {
+    throw new HttpsError(
+      'failed-precondition',
+      'The named supervisor does not hold a live supervisor grant in this hub.',
+    );
+  }
+  const ref = db.collection('supervisionSessions').doc();
+  await db.runTransaction(async (tx) => {
+    tx.set(ref, {
+      ownerId: caller.uid,
+      supervisorId,
+      tenantId: sessionTenantId,
+      sharedWith: [],
+      notes: data.notes ?? '',
+      date: Timestamp.fromMillis(data.dateMs ?? Date.now()),
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    writeAccessEventInTx(tx, {
+      subjectId: caller.uid,
+      actorId: caller.uid,
+      action: 'createSupervisionSession',
+      resourceType: 'supervisionSession',
+      resourceId: ref.id,
+      actingRole: actingGrant.role,
+      actingGrantId: actingGrant.id ?? null,
+      purpose,
+      correlationId: data.idempotencyKey ?? ref.id,
+      result: 'allowed',
+      detail: { supervisorId },
+    });
+  });
+  return { ok: true, sessionId: ref.id };
+});
+
+// ---------------------------------------------------------------------------
+// createMentorship — either party creates the mentorship pair record.
+//
+// A mentorship is a pair: exactly two participants, and the caller must
+// be one of them. The other participant must hold a live mentor or
+// worker grant in the tenant. Sharing a mentorship with a third party
+// goes through the consent machinery (mentorships is an
+// ALLOWED_SHARE_TARGET); participantIds and tenantId are immutable
+// on client update.
+// ---------------------------------------------------------------------------
+
+export const createMentorshipFn = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    participantIds?: string[];
+    tenantId?: string;
+    notes?: string;
+    purpose?: string;
+    actingGrantId?: string | null;
+    actingRole?: string | null;
+    idempotencyKey?: string;
+  };
+  if (!Array.isArray(data.participantIds) || data.participantIds.length !== 2 || !data.tenantId) {
+    throw new HttpsError(
+      'invalid-argument',
+      'participantIds (exactly two) and tenantId are required.',
+    );
+  }
+  const participantIds = data.participantIds;
+  if (
+    participantIds.some((p) => typeof p !== 'string' || !p) ||
+    participantIds[0] === participantIds[1] ||
+    !participantIds.includes(caller.uid)
+  ) {
+    throw new HttpsError(
+      'invalid-argument',
+      'participantIds must be two distinct people, including the caller.',
+    );
+  }
+  if (data.notes !== undefined && (typeof data.notes !== 'string' || data.notes.length > 2000)) {
+    throw new HttpsError('invalid-argument', 'notes must be a string of at most 2000 characters.');
+  }
+  const purpose = validatePurpose(data.purpose, 'peer mentorship');
+  const mentorshipTenantId = data.tenantId;
+  const ctx = await resolveCommandContext(
+    caller,
+    { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: mentorshipTenantId },
+    false,
+  );
+  const actingGrant = ctx.actingGrant;
+  if (!actingGrant || !commandAllowsRole('createMentorship', actingGrant.role)) {
+    throw new HttpsError(
+      'permission-denied',
+      'Only a live worker or mentor grant may create a mentorship.',
+    );
+  }
+  const decision = authorizeCommand({
+    authenticated: true,
+    uid: caller.uid,
+    actingGrant,
+    claimsRoles: caller.claimsRoles,
+    useClaimsFallback: false,
+    command: 'createMentorship',
+    highRisk: false,
+    scope: { tenantId: mentorshipTenantId, scopeType: 'self', scopeId: caller.uid },
+    relationship: 'participant',
+    relationshipRequired: true,
+    purpose,
+    consentRequired: false,
+    consentLive: null,
+  });
+  if (!decision.allowed) throw new HttpsError('permission-denied', decision.reason);
+  // The other participant must hold a live mentor or worker grant here.
+  const otherId = participantIds.find((p) => p !== caller.uid) as string;
+  const otherGrants = await liveGrantsFor(otherId);
+  const otherOk = otherGrants.some(
+    (g) => (g.role === 'mentor' || g.role === 'worker') && g.tenantId === mentorshipTenantId,
+  );
+  if (!otherOk) {
+    throw new HttpsError(
+      'failed-precondition',
+      'The other participant does not hold a live mentor or worker grant in this hub.',
+    );
+  }
+  const ref = db.collection('mentorships').doc();
+  await db.runTransaction(async (tx) => {
+    tx.set(ref, {
+      tenantId: mentorshipTenantId,
+      participantIds: [caller.uid, otherId],
+      sharedWith: [],
+      notes: data.notes ?? '',
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    writeAccessEventInTx(tx, {
+      subjectId: caller.uid,
+      actorId: caller.uid,
+      action: 'createMentorship',
+      resourceType: 'mentorship',
+      resourceId: ref.id,
+      actingRole: actingGrant.role,
+      actingGrantId: actingGrant.id ?? null,
+      purpose,
+      correlationId: data.idempotencyKey ?? ref.id,
+      result: 'allowed',
+      detail: { otherParticipantId: otherId },
+    });
+  });
+  return { ok: true, mentorshipId: ref.id };
+});
+
+// ---------------------------------------------------------------------------
 // ensureMyPerson — claim pending invitations + ensure the caller's own
 // persons doc, exactly once.
 //

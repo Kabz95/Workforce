@@ -61,6 +61,8 @@ export {
   closeHandoffFn as closeHandoff,
   inviteMemberFn as inviteMember,
   ensureMyPersonFn as ensureMyPerson,
+  createSupervisionSessionFn as createSupervisionSession,
+  createMentorshipFn as createMentorship,
 } from './gateway';
 
 // Collections whose documents are owned by a worker (ownerId) and
@@ -383,7 +385,9 @@ export const requestExport = onCall(async (request) => {
     action: 'read',
     expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
   });
-  const result = { url };
+  // The file path is returned alongside the URL so callers (and tests)
+  // can verify the stored object without parsing the signed URL.
+  const result = { url, file: file.name, expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 };
   await db.runTransaction(async (tx) => {
     writeAccessEventInTx(tx, {
       subjectId: uid,

@@ -6,7 +6,7 @@
  * (project demo-workforce) with pending invitations from
  * globalSetup. One test: an invitation-signup prologue (step 0 —
  * each account signs up via the invitation-gated UI and claims its
- * pending grant) plus seven sequential steps — a later step
+ * pending grant) plus eight sequential steps — a later step
  * depends on the earlier ones, so a failure stops the run at the
  * first broken step (Playwright's per-step reporting shows exactly
  * where).
@@ -28,6 +28,8 @@ import {
   getFormSharedWith,
   getUidByEmail,
   loadSeed,
+  seedAssignment,
+  seedPendingInvitation,
   shot,
   signIn,
   signOut,
@@ -188,8 +190,62 @@ test('Walkthrough: invitation signup + acceptance steps', async ({ page }, testI
     await shot(page, testInfo, 'step-6-navigator-locked-out');
   });
 
-  // --- Step 7: worker deletes their own data; the job completes. ---
-  await test.step('7. Worker deletion job completes', async () => {
+  // --- Step 7: supervision session + mentorship creation (Phase 2 completion). ---
+  // Runs BEFORE deletion (step 8): the worker's data must still exist.
+  // Self-sufficient: supervisor + mentor invitations are seeded here
+  // (not in globalSetup), so this step does not depend on other specs.
+  await test.step('7. Supervision session + mentorship creation', async () => {
+    const supervisor = { email: `${seed.run}-supervisor@example.test`, password: 'Test1234!', role: 'supervisor' };
+    const mentor = { email: `${seed.run}-mentor@example.test`, password: 'Test1234!', role: 'mentor' };
+    await seedPendingInvitation(supervisor.email, 'supervisor');
+    await seedPendingInvitation(mentor.email, 'mentor');
+    // Supervisor + mentor sign up via their invitations (claim).
+    await signOut(page);
+    await signUp(page, supervisor);
+    supervisor.uid = await getUidByEmail(supervisor.email);
+    await signOut(page);
+    await signUp(page, mentor);
+    mentor.uid = await getUidByEmail(mentor.email);
+    await signOut(page);
+    const supervisorUid = supervisor.uid as string;
+    const mentorUid = mentor.uid as string;
+
+    // Assignments link the worker to the supervisor + mentor (picker source).
+    await seedAssignment(workerUid, supervisorUid, 'supervisor');
+    await seedAssignment(workerUid, mentorUid, 'mentor');
+
+    await signIn(page, worker, 'worker-dashboard');
+
+    // Supervision: worker records a session naming the supervisor.
+    await page.goto('/supervision');
+    await page.getByTestId('supervision-supervisor').selectOption(supervisorUid);
+    await page.getByTestId('supervision-notes').fill('e2e supervision notes');
+    await page.getByTestId('supervision-create').click();
+    await expect(page.getByTestId('notice')).toContainText('Supervision session recorded');
+    await expect(page.getByTestId('supervision-session')).toContainText('e2e supervision notes');
+    await expect(page.getByTestId('supervision-session')).toContainText(supervisorUid);
+    await shot(page, testInfo, 'step-7-supervision-created');
+
+    // Mentorship: worker starts a pair with the mentor.
+    await page.goto('/mentorships');
+    await page.getByTestId('mentorship-other').selectOption(mentorUid);
+    await page.getByTestId('mentorship-notes').fill('e2e mentorship notes');
+    await page.getByTestId('mentorship-create').click();
+    await expect(page.getByTestId('notice')).toContainText('Mentorship created');
+    await expect(page.getByTestId('mentorship')).toContainText('e2e mentorship notes');
+    await expect(page.getByTestId('mentorship')).toContainText(mentorUid);
+    await shot(page, testInfo, 'step-7-mentorship-created');
+
+    // Export: the worker's export button is present (the callable +
+    // Storage happy path is covered by functions/test/callable.test.mjs;
+    // the browser does not follow the signed-URL popup here).
+    await page.goto('/record');
+    await expect(page.getByTestId('export-my-data')).toBeVisible();
+    await shot(page, testInfo, 'step-7-export-present');
+  });
+
+  // --- Step 8: worker deletes their own data; the job completes. ---
+  await test.step('8. Worker deletion job completes', async () => {
     await signOut(page);
     await signIn(page, worker, 'worker-dashboard');
     await page.goto('/record');

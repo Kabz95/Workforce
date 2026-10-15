@@ -536,6 +536,16 @@ describe('central role → command matrix (Phase 2)', () => {
     assert.equal(commandAllowsRole('processDeletion', 'worker'), true);
   });
 
+  it('commandAllowsRole gates supervision + mentorship creation', () => {
+    assert.equal(commandAllowsRole('createSupervisionSession', 'worker'), true);
+    assert.equal(commandAllowsRole('createSupervisionSession', 'supervisor'), false);
+    assert.equal(commandAllowsRole('createSupervisionSession', 'navigator'), false);
+    assert.equal(commandAllowsRole('createMentorship', 'worker'), true);
+    assert.equal(commandAllowsRole('createMentorship', 'mentor'), true);
+    assert.equal(commandAllowsRole('createMentorship', 'navigator'), false);
+    assert.equal(commandAllowsRole('createMentorship', 'supervisor'), false);
+  });
+
   it('self-service commands allow any authenticated person', () => {
     for (const cmd of ['respondHandoff', 'closeHandoff', 'requestRoleGrant', 'declareConflict', 'ensureMyPerson', 'getMyGrants']) {
       assert.equal(commandAllowsRole(cmd, 'worker'), true, cmd);

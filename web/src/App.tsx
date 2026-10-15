@@ -14,6 +14,8 @@ import Governance from './pages/Governance';
 import Aggregates from './pages/Aggregates';
 import AuditLog from './pages/AuditLog';
 import MyGrants from './pages/MyGrants';
+import Supervision from './pages/Supervision';
+import Mentorships from './pages/Mentorships';
 
 export default function App() {
   return (
@@ -106,6 +108,22 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <MyGrants />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/supervision"
+            element={
+              <ProtectedRoute roles={['worker', 'supervisor']}>
+                <Supervision />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/mentorships"
+            element={
+              <ProtectedRoute roles={['worker', 'mentor']}>
+                <Mentorships />
               </ProtectedRoute>
             }
           />

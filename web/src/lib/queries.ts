@@ -29,12 +29,14 @@ import type {
   GovernanceDecision,
   Handoff,
   Membership,
+  Mentorship,
   Opportunity,
   OpportunityApplication,
   PathwayStep,
   ReadinessAssessment,
   RoleGrant,
   Aggregate,
+  SupervisionSession,
   WithId,
   Worker,
 } from './types';
@@ -235,6 +237,9 @@ const SHAREABLE_COLLECTIONS: Record<string, string> = {
   // Phase 2: supervision sessions are shareable (the supervisor reads
   // ONLY through a live worker consent — see the rules block).
   supervisionSessions: 'supervisionSessions',
+  // Phase 2 completion: mentorships are shareable the same way —
+  // participants OR consented readers, tenant-scoped.
+  mentorships: 'mentorships',
 };
 
 const grantAccess = httpsCallable(functions, 'grantAccess');
@@ -248,6 +253,8 @@ const createHandoffFn = httpsCallable(functions, 'createHandoff');
 const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
 const closeHandoffFn = httpsCallable(functions, 'closeHandoff');
 const inviteMemberFn = httpsCallable(functions, 'inviteMember');
+const createSupervisionSessionFn = httpsCallable(functions, 'createSupervisionSession');
+const createMentorshipFn = httpsCallable(functions, 'createMentorship');
 
 export async function grantConsent(
   granterId: string,
@@ -510,6 +517,100 @@ export async function listMyHandoffs(uid: string, tenantId: string): Promise<Wit
   );
   const byId = new Map<string, WithId<Handoff>>();
   for (const d of [...asWorker.docs, ...asSender.docs, ...asRecipient.docs]) byId.set(d.id, toDoc<Handoff>(d));
+  return [...byId.values()];
+}
+
+/**
+ * Create a supervision session through the Kernel-governed callable.
+ * The caller is the session owner (the worker); the supervisor is
+ * named by UID and must hold a live supervisor grant in the tenant.
+ */
+export async function createSupervisionSession(
+  data: { supervisorId: string; tenantId: string; notes?: string; dateMs?: number },
+  acting?: ActingInput,
+): Promise<string> {
+  const result = await createSupervisionSessionFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'supervision reflection',
+    idempotencyKey: newIdempotencyKey(),
+  });
+  return (result.data as { sessionId: string }).sessionId;
+}
+
+/**
+ * Create a mentorship pair through the Kernel-governed callable.
+ * The caller must be one of the two participants.
+ */
+export async function createMentorship(
+  data: { participantIds: [string, string]; tenantId: string; notes?: string },
+  acting?: ActingInput,
+): Promise<string> {
+  const result = await createMentorshipFn({
+    ...data,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'peer mentorship',
+    idempotencyKey: newIdempotencyKey(),
+  });
+  return (result.data as { mentorshipId: string }).mentorshipId;
+}
+
+/** Supervision sessions the caller owns (worker view). */
+export async function listMySupervisionSessions(uid: string, tenantId: string): Promise<WithId<SupervisionSession>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'supervisionSessions'),
+      where('ownerId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<SupervisionSession>(d));
+}
+
+/** Supervision sessions shared WITH the caller (supervisor view — consent only). */
+export async function listSharedSupervisionSessions(uid: string, tenantId: string): Promise<WithId<SupervisionSession>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'supervisionSessions'),
+      where('sharedWith', 'array-contains', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<SupervisionSession>(d));
+}
+
+/** Mentorships where the caller is a participant. */
+export async function listMyMentorships(uid: string, tenantId: string): Promise<WithId<Mentorship>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'mentorships'),
+      where('participantIds', 'array-contains', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<Mentorship>(d));
+}
+
+/** Assignments where the caller is the worker or the holder (picker source). */
+export async function listMyAssignments(uid: string, tenantId: string): Promise<WithId<Assignment>[]> {
+  const asWorker = await getDocs(
+    query(
+      collection(db, 'assignments'),
+      where('workerId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const asHolder = await getDocs(
+    query(
+      collection(db, 'assignments'),
+      where('holderId', '==', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  const byId = new Map<string, WithId<Assignment>>();
+  for (const d of [...asWorker.docs, ...asHolder.docs]) byId.set(d.id, toDoc<Assignment>(d));
   return [...byId.values()];
 }
 
