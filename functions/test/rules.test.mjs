@@ -732,9 +732,11 @@ describe('mentorships rules (Phase 2 completion)', () => {
     const outsider = ctx('mentor-3', { roles: ['mentor'], tenantId: HUB });
     await assert.rejects(outsider.firestore().doc('mentorships/ment-pair-1').delete());
     await mentor().firestore().doc('mentorships/ment-pair-1').delete();
-    const gone = await testEnv.withSecurityRulesDisabled(async (context) =>
-      context.firestore().doc('mentorships/ment-pair-1').get(),
-    );
+    // withSecurityRulesDisabled returns void — capture the snapshot inside.
+    let gone;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      gone = await context.firestore().doc('mentorships/ment-pair-1').get();
+    });
     assert.equal(gone.exists, false);
   });
 
@@ -752,9 +754,10 @@ describe('mentorships rules (Phase 2 completion)', () => {
 describe('privacyLead oversight (Phase 3)', () => {
   it('privacyLead CANNOT enumerate consents they are not party to', async () => {
     // consent-1 belongs to worker-1 / worker-2; the privacy lead is
-    // neither granter nor grantee, so the list rule excludes it.
-    const snap = await privacyLead().firestore().collection('consents').get();
-    assert.equal(snap.docs.length, 0);
+    // neither granter nor grantee. Rules are not filters: a list query
+    // over consents the caller cannot read is denied wholesale — it
+    // does NOT return an empty list. Enumeration is impossible.
+    await assert.rejects(privacyLead().firestore().collection('consents').get());
     await assert.rejects(privacyLead().firestore().doc('consents/consent-1').get());
   });
 
@@ -774,9 +777,10 @@ describe('privacyLead oversight (Phase 3)', () => {
     const events = await privacyLead().firestore().collection('accessEvents')
       .where('tenantId', '==', HUB).get();
     assert.ok(events.docs.length >= 1);
-    const other = await privacyLead().firestore().collection('accessEvents')
-      .where('tenantId', '==', OTHER_HUB).get();
-    assert.equal(other.docs.length, 0);
+    // Cross-hub list is denied outright (rules are not filters) — it
+    // does NOT return an empty list.
+    await assert.rejects(privacyLead().firestore().collection('accessEvents')
+      .where('tenantId', '==', OTHER_HUB).get());
     const complaints = await privacyLead().firestore().collection('complaints')
       .where('tenantId', '==', HUB).get();
     assert.equal(complaints.docs.length, 1);
