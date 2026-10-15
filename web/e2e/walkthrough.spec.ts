@@ -21,6 +21,7 @@
  *   The UI loops processDeletion until the job reports done.
  */
 import { expect, test } from '@playwright/test';
+import type { SeededUser } from './helpers';
 import {
   assertDeletionComplete,
   autoAcceptDialogs,
@@ -195,8 +196,8 @@ test('Walkthrough: invitation signup + acceptance steps', async ({ page }, testI
   // Self-sufficient: supervisor + mentor invitations are seeded here
   // (not in globalSetup), so this step does not depend on other specs.
   await test.step('7. Supervision session + mentorship creation', async () => {
-    const supervisor = { email: `${seed.run}-supervisor@example.test`, password: 'Test1234!', role: 'supervisor' };
-    const mentor = { email: `${seed.run}-mentor@example.test`, password: 'Test1234!', role: 'mentor' };
+    const supervisor: SeededUser = { email: `${seed.run}-supervisor@example.test`, password: 'Test1234!', role: 'supervisor' };
+    const mentor: SeededUser = { email: `${seed.run}-mentor@example.test`, password: 'Test1234!', role: 'mentor' };
     await seedPendingInvitation(supervisor.email, 'supervisor');
     await seedPendingInvitation(mentor.email, 'mentor');
     // Supervisor + mentor sign up via their invitations (claim).
