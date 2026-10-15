@@ -38,7 +38,7 @@ import {
 
 test('Walkthrough: invitation signup + acceptance steps', async ({ page }, testInfo) => {
   const seed = loadSeed();
-  const { worker, navigator, coordinator } = seed.users;
+  const { worker, navigator, hubCoordinator: coordinator } = seed.users;
   const sharedName = `E2E Shared ${seed.run}`;
   const unsharedName = `E2E Unshared ${seed.run}`;
 
