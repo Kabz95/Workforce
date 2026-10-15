@@ -112,7 +112,12 @@ async function callFn(name, token, data) {
   const body = await res.json();
   if (body.error) {
     const err = new Error(body.error.message || 'callable error');
-    err.code = body.error.status || body.error.code || 'unknown';
+    // The callable wire format carries the canonical status
+    // (PERMISSION_DENIED); the client SDKs expose the kebab-case
+    // Functions code (permission-denied). Normalise here so the
+    // assertions match the client-visible contract.
+    const raw = body.error.status || body.error.code || 'unknown';
+    err.code = String(raw).toLowerCase().replace(/_/g, '-');
     throw err;
   }
   return body.result;
@@ -516,7 +521,7 @@ describe('requestExport auth gate (Phase 2)', () => {
       // upload fails AFTER authorization — that is environmental, not
       // an authorization failure. The auth gate passing is the assertion.
       assert.notEqual(err.code, 'permission-denied', 'worker should pass the export auth gate');
-      assert.match(String(err.code), /internal|unknown|storage|not-found/);
+      assert.match(String(err.code), /internal|unknown|storage|not-found/i);
     }
   });
 });
