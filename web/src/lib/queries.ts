@@ -36,7 +36,6 @@ import type {
   PathwayStep,
   ReadinessAssessment,
   RoleGrant,
-  Aggregate,
   SupervisionSession,
   WithId,
   Worker,
@@ -930,33 +929,9 @@ export async function submitSupportFeedback(
 //   consent is via access-event aggregates + published aggregates,
 //   never by enumerating other people's consent records.
 //
-// listSharedSupervisionSessions + listMyMentorships are Engineer 3's
-// implementations (shared with the supervision/mentorship branch);
-// the other four are this branch's additions.
-
-/** Supervision sessions shared WITH the caller (supervisor view — consent only). */
-export async function listSharedSupervisionSessions(uid: string, tenantId: string): Promise<WithId<SupervisionSession>[]> {
-  const snap = await getDocs(
-    query(
-      collection(db, 'supervisionSessions'),
-      where('sharedWith', 'array-contains', uid),
-      where('tenantId', '==', tenantId),
-    ),
-  );
-  return snap.docs.map((d) => toDoc<SupervisionSession>(d));
-}
-
-/** Mentorships where the caller is a participant. */
-export async function listMyMentorships(uid: string, tenantId: string): Promise<WithId<Mentorship>[]> {
-  const snap = await getDocs(
-    query(
-      collection(db, 'mentorships'),
-      where('participantIds', 'array-contains', uid),
-      where('tenantId', '==', tenantId),
-    ),
-  );
-  return snap.docs.map((d) => toDoc<Mentorship>(d));
-}
+// listSharedSupervisionSessions + listMyMentorships live above (Engineer 3's
+// implementations from the supervision/mentorship branch); the four
+// helpers below are the dashboards branch's additions.
 
 /** The caller's own assignments for one role (supervisor / mentor). */
 export async function listMyAssignmentsForRole(

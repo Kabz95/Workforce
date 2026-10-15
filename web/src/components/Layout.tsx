@@ -15,7 +15,7 @@ const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubCoordinator'] },
   { to: '/opportunities', label: 'Opportunities' },
   { to: '/governance', label: 'Governance' },
-  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council'] },
+  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead'] },
   { to: '/audit', label: 'My Audit Log' },
   { to: '/grants', label: 'My Roles & Grants' },
   { to: '/support', label: 'Support' },

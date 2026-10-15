@@ -630,6 +630,23 @@ describe('supervision sessions (Phase 2)', () => {
     // A legitimate field update still works.
     await db.doc('supervisionSessions/sess-1').update({ notes: 'ok' });
   });
+
+  it('sharedWith reader can LIST shared sessions (listSharedSupervisionSessions); tenantId-only list is denied', async () => {
+    await seedSession();
+    // worker-2 is in sharedWith on sess-shared — the sharedWith list
+    // query (the supervisor dashboard's query) returns it.
+    const shared = await worker2().firestore().collection('supervisionSessions')
+      .where('sharedWith', 'array-contains', 'worker-2')
+      .where('tenantId', '==', HUB)
+      .get();
+    assert.ok(shared.docs.some((d) => d.id === 'sess-shared'));
+    assert.ok(!shared.docs.some((d) => d.id === 'sess-1'));
+    // Rules are not filters: a tenantId-only list (no owner/sharedWith
+    // constraint) is denied outright, not filtered to empty.
+    await assert.rejects(worker2().firestore().collection('supervisionSessions')
+      .where('tenantId', '==', HUB)
+      .get());
+  });
 });
 
 describe('mentorships rules (Phase 2 completion)', () => {
@@ -725,6 +742,24 @@ describe('mentorships rules (Phase 2 completion)', () => {
       .where('tenantId', '==', HUB)
       .get();
     assert.equal(none.docs.length, 0);
+  });
+
+  it('consented non-participant can LIST shared mentorships (listSharedMentorships); tenantId-only list is denied', async () => {
+    await seedPair();
+    // mentor-1 is in sharedWith on ment-pair-shared, not in participantIds.
+    // The sharedWith list query (the mentor dashboard's query) returns it.
+    const shared = await mentor().firestore().collection('mentorships')
+      .where('sharedWith', 'array-contains', 'mentor-1')
+      .where('tenantId', '==', HUB)
+      .get();
+    assert.ok(shared.docs.some((d) => d.id === 'ment-pair-shared'));
+    assert.ok(!shared.docs.some((d) => d.id === 'ment-pair-1'));
+    // Rules are not filters: a tenantId-only list (no participantIds /
+    // sharedWith constraint) is denied outright, not filtered to empty.
+    const outsider = ctx('mentor-3', { roles: ['mentor'], tenantId: HUB });
+    await assert.rejects(outsider.firestore().collection('mentorships')
+      .where('tenantId', '==', HUB)
+      .get());
   });
 
   it('either participant may end (delete) the mentorship; a non-participant may not', async () => {

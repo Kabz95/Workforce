@@ -116,8 +116,8 @@ export default async function globalSetup(): Promise<void> {
   }
 
   const outPath = join(dirname(fileURLToPath(import.meta.url)), '.e2e-users.json');
-  // The seed file uses the specs' key names: `coordinator` for the
-  // hubCoordinator invitation (the walkthrough reads that key).
+  // The seed file uses the canonical role keys (hubCoordinator, not
+  // the legacy `coordinator` alias the dashboards branch wrote).
   writeFileSync(
     outPath,
     JSON.stringify(
@@ -127,7 +127,7 @@ export default async function globalSetup(): Promise<void> {
         users: {
           worker: users.worker,
           navigator: users.navigator,
-          coordinator: users.hubCoordinator,
+          hubCoordinator: users.hubCoordinator,
           supervisor: users.supervisor,
           mentor: users.mentor,
           privacyLead: users.privacyLead,

@@ -57,7 +57,7 @@ export function loadSeed(): SeedFile {
     );
   }
   const users = (parsed as { users?: Record<string, unknown> }).users;
-  for (const key of ['worker', 'navigator', 'hubCoordinator'] as const) {
+  for (const key of ['worker', 'navigator', 'hubCoordinator', 'supervisor', 'mentor', 'privacyLead'] as const) {
     const user = users?.[key] as { email?: unknown; password?: unknown; role?: unknown } | undefined;
     if (!user || typeof user.email !== 'string' || typeof user.password !== 'string' || user.role !== key) {
       throw new Error(
