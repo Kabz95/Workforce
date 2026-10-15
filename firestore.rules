@@ -317,8 +317,14 @@ service cloud.firestore {
     match /consents/{consentId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.granterId || uid() == resource.data.granteeId);
+      // .get(field, null) in list rules: a list query does not bind
+      // resource.data per document, so a direct field access on a field
+      // the query does not constrain ERRORS ("Property X is undefined")
+      // and denies the whole query. .get() yields null, so the comparison
+      // is false — the exact same permission, with no error.
+      // Rules are not filters.
       allow list: if signedIn()
-        && (uid() == resource.data.granterId || uid() == resource.data.granteeId);
+        && (uid() == resource.data.get('granterId', null) || uid() == resource.data.get('granteeId', null));
       allow create: if signedIn()
         && uid() == request.resource.data.granterId
         && incomingTenantMatches(request.resource.data)
@@ -426,8 +432,10 @@ service cloud.firestore {
     match /complaints/{complaintId} {
       allow get: if signedIn() && storedTenantMatches(resource.data)
         && (uid() == resource.data.complainantId || canAuthorise());
+      // .get() in list rules: see consents — an unconstrained field
+      // access errors on list evaluation; .get() makes it false instead.
       allow list: if signedIn()
-        && (uid() == resource.data.complainantId || (canAuthorise() && storedTenantMatches(resource.data)));
+        && (uid() == resource.data.get('complainantId', null) || (canAuthorise() && storedTenantMatches(resource.data)));
       allow create: if signedIn()
         && uid() == request.resource.data.complainantId
         && incomingTenantMatches(request.resource.data)
@@ -493,8 +501,10 @@ service cloud.firestore {
       allow get: if signedIn()
         && (uid() == resource.data.subjectId
           || (isPrivacyLead() && storedTenantMatches(resource.data)));
+      // .get() in list rules: see consents — an unconstrained field
+      // access errors on list evaluation; .get() makes it false instead.
       allow list: if signedIn()
-        && (uid() == resource.data.subjectId || (isPrivacyLead() && storedTenantMatches(resource.data)));
+        && (uid() == resource.data.get('subjectId', null) || (isPrivacyLead() && storedTenantMatches(resource.data)));
       allow create, update, delete: if false;
     }
 

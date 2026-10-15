@@ -17,6 +17,7 @@ import { db, functions } from './firebase';
 import type {
   AccessEvent,
   AdaptationLog,
+  Aggregate,
   Assignment,
   CertificationNavigation,
   Complaint,
@@ -908,4 +909,91 @@ export async function submitSupportFeedback(
     actingGrantId: acting?.actingGrantId ?? null,
     actingRole: acting?.actingRole ?? null,
   });
+}
+
+// --- Phase 3: Supervisor / Mentor / PrivacyLead dashboards --
+// Every query stays inside the caller's own data or what the rules
+// explicitly permit for the acting role:
+// - Supervision sessions: sharedWith only (consent), never via
+//   supervisorId. The supervisorId link confers no read.
+// - Mentorships: participantIds (the relationship) or sharedWith
+//   (consent). No hub-wide mentorship view exists.
+// - Assignments: the caller's own assignments (holderId), filtered
+//   to the role client-side — no cross-holder listing.
+// - Access events: privacyLead hub-wide (rules: isPrivacyLead +
+//   tenant). This is audit oversight, not an activity feed: the
+//   dashboard shows aggregates + recent denials, never a live feed.
+// - Complaints: privacyLead (canAuthorise + tenant) — the queue
+//   the privacy lead is designated to handle.
+// - There is deliberately NO hub-wide consent listing: the consent
+//   rules allow only granter / grantee reads. Privacy oversight of
+//   consent is via access-event aggregates + published aggregates,
+//   never by enumerating other people's consent records.
+//
+// listSharedSupervisionSessions + listMyMentorships are Engineer 3's
+// implementations (shared with the supervision/mentorship branch);
+// the other four are this branch's additions.
+
+/** Supervision sessions shared WITH the caller (supervisor view — consent only). */
+export async function listSharedSupervisionSessions(uid: string, tenantId: string): Promise<WithId<SupervisionSession>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'supervisionSessions'),
+      where('sharedWith', 'array-contains', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<SupervisionSession>(d));
+}
+
+/** Mentorships where the caller is a participant. */
+export async function listMyMentorships(uid: string, tenantId: string): Promise<WithId<Mentorship>[]> {
+  const snap = await getDocs(
+    query(
+      collection(db, 'mentorships'),
+      where('participantIds', 'array-contains', uid),
+      where('tenantId', '==', tenantId),
+    ),
+  );
+  return snap.docs.map((d) => toDoc<Mentorship>(d));
+}
+
+/** The caller's own assignments for one role (supervisor / mentor). */
+export async function listMyAssignmentsForRole(
+  uid: string,
+  tenantId: string,
+  role: 'mentor' | 'navigator' | 'supervisor' | 'facilitator',
+): Promise<WithId<Assignment>[]> {
+  const q = query(
+    collection(db, 'assignments'),
+    where('holderId', '==', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Assignment>(d)).filter((a) => a.role === role);
+}
+
+/** Mentorships shared WITH the caller by consent (not a participant). */
+export async function listSharedMentorships(uid: string, tenantId: string): Promise<WithId<Mentorship>[]> {
+  const q = query(
+    collection(db, 'mentorships'),
+    where('sharedWith', 'array-contains', uid),
+    where('tenantId', '==', tenantId),
+  );
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Mentorship>(d));
+}
+
+/** All access events in the hub (privacyLead audit oversight). */
+export async function listHubAccessEvents(tenantId: string): Promise<WithId<AccessEvent>[]> {
+  const q = query(collection(db, 'accessEvents'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<AccessEvent>(d));
+}
+
+/** All complaints in the hub (privacyLead queue). */
+export async function listHubComplaints(tenantId: string): Promise<WithId<Complaint>[]> {
+  const q = query(collection(db, 'complaints'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<Complaint>(d));
 }

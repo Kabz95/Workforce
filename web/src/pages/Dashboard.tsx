@@ -13,6 +13,9 @@ import ErrorNotice from '../components/ErrorNotice';
 import WorkerDashboard from '../components/dashboards/WorkerDashboard';
 import NavigatorDashboard from '../components/dashboards/NavigatorDashboard';
 import HubCoordinatorDashboard from '../components/dashboards/HubCoordinatorDashboard';
+import SupervisorDashboard from '../components/dashboards/SupervisorDashboard';
+import MentorDashboard from '../components/dashboards/MentorDashboard';
+import PrivacyLeadDashboard from '../components/dashboards/PrivacyLeadDashboard';
 
 /**
  * Manifest-driven dashboard (Phase 2).
@@ -20,10 +23,10 @@ import HubCoordinatorDashboard from '../components/dashboards/HubCoordinatorDash
  * The manifest supplies the shell: acting context, one-sentence
  * purpose, and the explicit boundaries (what this role never sees).
  * The role-specific dashboard components below supply the real work
- * surfaces — Worker, Navigator, and Hub Coordinator are wired to live
- * data; the other roles render the manifest fallback (aggregates for
- * analyst / steering / council, links for the rest) until their
- * dashboards land in later phases.
+ * surfaces — Worker, Navigator, Hub Coordinator, Supervisor, Mentor,
+ * and Privacy Lead are wired to live data; the other roles render the
+ * manifest fallback (aggregates for analyst / steering / council,
+ * links for the rest) until their dashboards land in later phases.
  */
 export default function Dashboard() {
   const { user, actingRole, tenantId } = useAuth();
@@ -85,8 +88,16 @@ export default function Dashboard() {
       {actingRole === 'worker' && <WorkerDashboard />}
       {actingRole === 'navigator' && <NavigatorDashboard />}
       {actingRole === 'hubCoordinator' && <HubCoordinatorDashboard />}
+      {actingRole === 'supervisor' && <SupervisorDashboard />}
+      {actingRole === 'mentor' && <MentorDashboard />}
+      {actingRole === 'privacyLead' && <PrivacyLeadDashboard />}
 
-      {actingRole !== 'worker' && actingRole !== 'navigator' && actingRole !== 'hubCoordinator' && (
+      {actingRole !== 'worker' &&
+        actingRole !== 'navigator' &&
+        actingRole !== 'hubCoordinator' &&
+        actingRole !== 'supervisor' &&
+        actingRole !== 'mentor' &&
+        actingRole !== 'privacyLead' && (
         <>
           <section className="card">
             <h2>Attention queue</h2>

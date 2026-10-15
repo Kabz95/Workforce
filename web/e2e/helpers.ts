@@ -31,7 +31,15 @@ export interface SeededUser {
 export interface SeedFile {
   run: string;
   hub: string;
-  users: { worker: SeededUser; navigator: SeededUser; hubCoordinator: SeededUser };
+  users: {
+    worker: SeededUser;
+    navigator: SeededUser;
+    hubCoordinator: SeededUser;
+    // Phase 3 wave 1 (dashboards-wave1.spec.ts).
+    supervisor: SeededUser;
+    mentor: SeededUser;
+    privacyLead: SeededUser;
+  };
 }
 
 /** Read the seed file written by globalSetup. Fails fast if the file is

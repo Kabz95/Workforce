@@ -751,6 +751,53 @@ describe('mentorships rules (Phase 2 completion)', () => {
   });
 });
 
+describe('privacyLead oversight (Phase 3)', () => {
+  it('privacyLead CANNOT enumerate consents they are not party to', async () => {
+    // consent-1 belongs to worker-1 / worker-2; the privacy lead is
+    // neither granter nor grantee. Rules are not filters: a list query
+    // over consents the caller cannot read is denied wholesale — it
+    // does NOT return an empty list. Enumeration is impossible.
+    await assert.rejects(privacyLead().firestore().collection('consents').get());
+    await assert.rejects(privacyLead().firestore().doc('consents/consent-1').get());
+  });
+
+  it('privacyLead CAN list hub access events + complaints; NOT cross-hub', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('accessEvents/event-other').set({
+        subjectId: 'worker-9', actorId: 'worker-9', action: 'grantAccess',
+        resourceType: 'pathwaySteps', resourceId: 'step-9', actingRole: 'worker',
+        actingGrantId: 'grant-9', purpose: 'test', correlationId: 'c9',
+        result: 'allowed', createdAt: new Date(), tenantId: OTHER_HUB,
+      });
+      await db.doc('complaints/complaint-1').set({
+        tenantId: HUB, complainantId: 'worker-1', summary: 's', status: 'open',
+      });
+    });
+    const events = await privacyLead().firestore().collection('accessEvents')
+      .where('tenantId', '==', HUB).get();
+    assert.ok(events.docs.length >= 1);
+    // Cross-hub list is denied outright (rules are not filters) — it
+    // does NOT return an empty list.
+    await assert.rejects(privacyLead().firestore().collection('accessEvents')
+      .where('tenantId', '==', OTHER_HUB).get());
+    const complaints = await privacyLead().firestore().collection('complaints')
+      .where('tenantId', '==', HUB).get();
+    assert.equal(complaints.docs.length, 1);
+  });
+
+  it('privacyLead reads tenant-scoped aggregates; worker cannot', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc('aggregates/agg-hub').set({
+        tenantId: HUB, metric: 'm', period: 'p', value: 10, breakdown: {},
+      });
+    });
+    const own = await privacyLead().firestore().doc('aggregates/agg-hub').get();
+    assert.equal(own.exists, true);
+    await assert.rejects(worker1().firestore().doc('aggregates/agg-hub').get());
+  });
+});
+
 describe('persons creation (production onboarding)', () => {
   it('owner with claims CANNOT create their own persons doc (server-only)', async () => {
     await assert.rejects(
