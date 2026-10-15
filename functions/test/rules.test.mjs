@@ -732,9 +732,11 @@ describe('mentorships rules (Phase 2 completion)', () => {
     const outsider = ctx('mentor-3', { roles: ['mentor'], tenantId: HUB });
     await assert.rejects(outsider.firestore().doc('mentorships/ment-pair-1').delete());
     await mentor().firestore().doc('mentorships/ment-pair-1').delete();
-    const gone = await testEnv.withSecurityRulesDisabled(async (context) =>
-      context.firestore().doc('mentorships/ment-pair-1').get(),
-    );
+    // withSecurityRulesDisabled returns void — capture the snapshot inside.
+    let gone;
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      gone = await context.firestore().doc('mentorships/ment-pair-1').get();
+    });
     assert.equal(gone.exists, false);
   });
 
