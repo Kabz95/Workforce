@@ -158,12 +158,20 @@ export default function Consents() {
               <option value="pathwaySteps">Pathway steps</option>
               <option value="certificationNavigation">Certification navigation</option>
               <option value="supervisionSessions">Supervision sessions</option>
+              <option value="mentorships">Mentorships</option>
             </select>
             {resourceType === 'supervisionSessions' && (
               <small>
                 Supervision sharing: the supervisor reads this session ONLY
                 through this consent. Their supervisorId on the session
                 confers no access by itself.
+              </small>
+            )}
+            {resourceType === 'mentorships' && (
+              <small>
+                Mentorship sharing: a third party reads this mentorship ONLY
+                through this consent. Being a participant is what grants
+                access; sharedWith adds consented readers.
               </small>
             )}
           </div>

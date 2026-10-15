@@ -61,10 +61,19 @@ export default async function globalSetup(): Promise<void> {
   const db = admin.firestore();
   const auth = admin.auth();
 
+  // Seed emails are built from the lowercased role slug: production stores
+  // granteeEmail lowercased and the claim query lowercases the sign-in
+  // email, and Firestore string equality is case-sensitive — a mixed-case
+  // seed email (e.g. hubCoordinator) would never match the claim query.
+  const makeUser = (role: Role): InvitedUser => ({
+    email: `${RUN}-${role.toLowerCase()}@example.test`,
+    password: PASSWORD,
+    role,
+  });
   const users: Record<Role, InvitedUser> = {
-    worker: { email: `${RUN}-worker@example.test`, password: PASSWORD, role: 'worker' },
-    navigator: { email: `${RUN}-navigator@example.test`, password: PASSWORD, role: 'navigator' },
-    hubCoordinator: { email: `${RUN}-hubCoordinator@example.test`, password: PASSWORD, role: 'hubCoordinator' },
+    worker: makeUser('worker'),
+    navigator: makeUser('navigator'),
+    hubCoordinator: makeUser('hubCoordinator'),
   };
 
   for (const role of Object.keys(users) as Role[]) {

@@ -538,7 +538,9 @@ export type CommandName =
   | 'declareConflict'
   | 'ensureMyPerson'
   | 'inviteMember'
-  | 'getMyGrants';
+  | 'getMyGrants'
+  | 'createSupervisionSession'
+  | 'createMentorship';
 
 export interface CommandMatrixEntry {
   /**
@@ -632,6 +634,16 @@ export const COMMAND_MATRIX: Readonly<Record<CommandName, CommandMatrixEntry>> =
     roles: 'any',
     highRisk: false,
     note: 'Own grants only.',
+  },
+  createSupervisionSession: {
+    roles: ['worker'],
+    highRisk: false,
+    note: 'Caller is the session owner (the worker). The supervisor must hold a live supervisor grant in the tenant. The supervisor reads the session ONLY through a live worker consent — supervisorId confers no access by itself.',
+  },
+  createMentorship: {
+    roles: ['worker', 'mentor'],
+    highRisk: false,
+    note: 'Caller must be a participant; the other participant must hold a live mentor or worker grant in the tenant. A mentorship is a pair: exactly two participants.',
   },
 };
 
@@ -918,6 +930,7 @@ export const ALLOWED_SHARE_TARGETS: readonly string[] = [
   'pathwaySteps',
   'certificationNavigation',
   'supervisionSessions',
+  'mentorships',
 ];
 
 /** Scope string a grant must carry to share a document of this type. */

@@ -31,20 +31,34 @@ export interface SeededUser {
 export interface SeedFile {
   run: string;
   hub: string;
-  users: { worker: SeededUser; navigator: SeededUser; coordinator: SeededUser };
+  users: { worker: SeededUser; navigator: SeededUser; hubCoordinator: SeededUser };
 }
 
-/** Read the seed file written by globalSetup. */
+/** Read the seed file written by globalSetup. Fails fast if the file is
+ *  missing or a seeded user is absent/malformed, so a writer/reader drift
+ *  surfaces here instead of as an undefined-property TypeError mid-test. */
 export function loadSeed(): SeedFile {
   const path = join(dirname(fileURLToPath(import.meta.url)), '.e2e-users.json');
+  let parsed: unknown;
   try {
-    return JSON.parse(readFileSync(path, 'utf-8')) as SeedFile;
+    parsed = JSON.parse(readFileSync(path, 'utf-8'));
   } catch {
     throw new Error(
       'Missing web/e2e/.e2e-users.json — globalSetup did not run. ' +
         'Run the spec via `npm run test:e2e` (Playwright runs globalSetup first).',
     );
   }
+  const users = (parsed as { users?: Record<string, unknown> }).users;
+  for (const key of ['worker', 'navigator', 'hubCoordinator'] as const) {
+    const user = users?.[key] as { email?: unknown; password?: unknown; role?: unknown } | undefined;
+    if (!user || typeof user.email !== 'string' || typeof user.password !== 'string' || user.role !== key) {
+      throw new Error(
+        `Malformed web/e2e/.e2e-users.json — expected users.${key} with matching role. ` +
+          'Re-run globalSetup via `npm run test:e2e`.',
+      );
+    }
+  }
+  return parsed as SeedFile;
 }
 
 // --- Admin SDK against the emulators (singleton) ---
@@ -78,6 +92,48 @@ async function poll<T>(fn: () => Promise<T>, until: (v: T) => boolean, timeoutMs
     }
     await new Promise((r) => setTimeout(r, 500));
   }
+}
+
+/** Seed a pending invitation (production inviteMember shape) for an email. */
+export async function seedPendingInvitation(
+  email: string,
+  role: string,
+  tenantId = 'hub-1',
+): Promise<string> {
+  const ref = await adminDb().collection('roleGrants').add({
+    granteeEmail: email,
+    granteeId: '',
+    role,
+    scopeType: role === 'worker' ? 'self' : 'hub',
+    scopeId: role === 'worker' ? email : tenantId,
+    tenantId,
+    status: 'pending',
+    validFrom: new Date(Date.now() - 1000),
+    validUntil: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+    grantedBy: 'e2e-seed',
+    basis: 'playwright-e2e',
+    needsReview: false,
+  });
+  return ref.id;
+}
+
+/** Seed an active assignment (Admin SDK — assignments are server-written). */
+export async function seedAssignment(
+  workerUid: string,
+  holderUid: string,
+  role: 'mentor' | 'navigator' | 'supervisor' | 'facilitator',
+  tenantId = 'hub-1',
+): Promise<string> {
+  const ref = await adminDb().collection('assignments').add({
+    workerId: workerUid,
+    holderId: holderUid,
+    role,
+    tenantId,
+    status: 'active',
+    startedAt: new Date(),
+    endedAt: null,
+  });
+  return ref.id;
 }
 
 /** Resolve a signed-up user's uid: the persons doc id for their email (polls: the claim lands async). */

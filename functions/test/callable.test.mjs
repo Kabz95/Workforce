@@ -10,7 +10,7 @@
  * emulator serves one project; the test seeds that project):
  *
  *   cd workforce-platform/functions && npm run build
- *   firebase emulators:start --project demo-workforce --only auth,firestore,functions
+ *   firebase emulators:start --project demo-workforce --only auth,firestore,functions,storage
  *   npm run test:callable
  *
  * The Functions emulator must run the CURRENT build (npm run build
@@ -23,11 +23,10 @@
  *   FUNCTIONS_EMULATOR_HOST (default '127.0.0.1:5001')
  *
  * Notes on what this suite does NOT prove:
- * - requestExport's happy path needs real Storage (the emulator stack
- *   has no Storage emulator configured); the test proves the auth
- *   gate and documents the gap instead of asserting a URL.
  * - The deletion job's auto-export step is best-effort: in the
  *   emulator it records exportError and deletion still completes.
+ *   (The requestExport happy-path test below proves the Storage
+ *   write against the Storage emulator.)
  */
 
 import { describe, it, before, after } from 'node:test';
@@ -112,7 +111,12 @@ async function callFn(name, token, data) {
   const body = await res.json();
   if (body.error) {
     const err = new Error(body.error.message || 'callable error');
-    err.code = body.error.status || body.error.code || 'unknown';
+    // The callable wire format carries the canonical status
+    // (PERMISSION_DENIED); the client SDKs expose the kebab-case
+    // Functions code (permission-denied). Normalise here so the
+    // assertions match the client-visible contract.
+    const raw = body.error.status || body.error.code || 'unknown';
+    err.code = String(raw).toLowerCase().replace(/_/g, '-');
     throw err;
   }
   return body.result;
@@ -142,16 +146,24 @@ before(async () => {
   process.env.GCLOUD_PROJECT = PROJECT;
   process.env.FIRESTORE_EMULATOR_HOST = FIRESTORE_HOST;
   process.env.FIREBASE_AUTH_EMULATOR_HOST = AUTH_HOST;
+  // The test's own Admin SDK talks to the Storage emulator for the
+  // export happy-path test (file existence + bundle download).
+  process.env.FIREBASE_STORAGE_EMULATOR_HOST =
+    process.env.FIREBASE_STORAGE_EMULATOR_HOST || '127.0.0.1:9199';
   try {
     await probeEmulators();
   } catch (err) {
     throw new Error(
       `${err.message}\n` +
-        'Start the emulators first: firebase emulators:start --project demo-workforce --only auth,firestore,functions',
+        'Start the emulators first: firebase emulators:start --project demo-workforce --only auth,firestore,functions,storage',
     );
   }
   admin = (await import('firebase-admin')).default;
-  admin.initializeApp({ projectId: PROJECT });
+  // The Storage emulator's default bucket for this project is
+  // `<project-id>.appspot.com`. Without storageBucket, bucket() with
+  // no name throws storage/invalid-argument — the export happy-path
+  // test downloads the bundle via admin.storage().bucket().
+  admin.initializeApp({ projectId: PROJECT, storageBucket: `${PROJECT}.appspot.com` });
   db = admin.firestore();
   auth = admin.auth();
 });
@@ -307,6 +319,160 @@ describe('handoff flows (Phase 2)', () => {
         workerId: worker.uid, recipientId: nav.uid, recipientRole: 'navigator',
         purpose: 'handoff coordination', payloadSummary: '', tenantId: HUB,
         actingRole: 'worker',
+      }),
+      (e) => e.code === 'permission-denied',
+    );
+  });
+});
+
+describe('createSupervisionSession (Phase 2 completion)', () => {
+  it('worker creates a session naming a live supervisor; audit event written', async () => {
+    const worker = await makeUser('worker');
+    const sup = await makeUser('supervisor');
+    const created = await callFn('createSupervisionSession', worker.token, {
+      supervisorId: sup.uid,
+      tenantId: HUB,
+      notes: 'reflective notes',
+      dateMs: Date.now(),
+      purpose: 'supervision reflection',
+      actingRole: 'worker',
+    });
+    assert.ok(created.sessionId);
+    const snap = await db.collection('supervisionSessions').doc(created.sessionId).get();
+    assert.equal(snap.data().ownerId, worker.uid);
+    assert.equal(snap.data().supervisorId, sup.uid);
+    assert.deepEqual(snap.data().sharedWith, []);
+    const events = await db.collection('accessEvents')
+      .where('subjectId', '==', worker.uid)
+      .where('action', '==', 'createSupervisionSession')
+      .get();
+    assert.ok(events.size >= 1);
+  });
+
+  it('rejects a supervisor without a live grant in the hub', async () => {
+    const worker = await makeUser('worker');
+    // Bare Auth user: no claims, no grant docs.
+    const bare = await auth.createUser({ email: `bare-${RUN}@example.test`, password: 'Test1234!' });
+    createdUids.push(bare.uid);
+    await assert.rejects(
+      callFn('createSupervisionSession', worker.token, {
+        supervisorId: bare.uid, tenantId: HUB, notes: 'n', purpose: 'supervision reflection', actingRole: 'worker',
+      }),
+      (e) => e.code === 'failed-precondition',
+    );
+  });
+
+  it('a supervisor cannot create a session (worker-only command)', async () => {
+    const worker = await makeUser('worker');
+    const sup = await makeUser('supervisor');
+    await assert.rejects(
+      callFn('createSupervisionSession', sup.token, {
+        supervisorId: sup.uid, tenantId: HUB, notes: 'n', purpose: 'supervision reflection', actingRole: 'supervisor',
+      }),
+      (e) => e.code === 'permission-denied',
+    );
+    // The worker is untouched by the denied attempt.
+    const mine = await db.collection('supervisionSessions').where('ownerId', '==', worker.uid).get();
+    assert.equal(mine.size, 0);
+  });
+
+  it('rejects a non-taxonomy purpose', async () => {
+    const worker = await makeUser('worker');
+    const sup = await makeUser('supervisor');
+    await assert.rejects(
+      callFn('createSupervisionSession', worker.token, {
+        supervisorId: sup.uid, tenantId: HUB, notes: 'n', purpose: 'bogus purpose', actingRole: 'worker',
+      }),
+      (e) => e.code === 'invalid-argument',
+    );
+  });
+});
+
+describe('createMentorship (Phase 2 completion)', () => {
+  it('worker + mentor create a pair; audit event written', async () => {
+    const worker = await makeUser('worker');
+    const mentor = await makeUser('mentor');
+    const created = await callFn('createMentorship', worker.token, {
+      participantIds: [worker.uid, mentor.uid],
+      tenantId: HUB,
+      notes: 'mentorship notes',
+      purpose: 'peer mentorship',
+      actingRole: 'worker',
+    });
+    assert.ok(created.mentorshipId);
+    const snap = await db.collection('mentorships').doc(created.mentorshipId).get();
+    assert.deepEqual(snap.data().participantIds, [worker.uid, mentor.uid]);
+    assert.deepEqual(snap.data().sharedWith, []);
+    const events = await db.collection('accessEvents')
+      .where('subjectId', '==', worker.uid)
+      .where('action', '==', 'createMentorship')
+      .get();
+    assert.ok(events.size >= 1);
+  });
+
+  it('a mentor may initiate the pair', async () => {
+    const worker = await makeUser('worker');
+    const mentor = await makeUser('mentor');
+    const created = await callFn('createMentorship', mentor.token, {
+      participantIds: [mentor.uid, worker.uid],
+      tenantId: HUB,
+      notes: 'mentor-initiated',
+      purpose: 'peer mentorship',
+      actingRole: 'mentor',
+    });
+    assert.ok(created.mentorshipId);
+  });
+
+  it('rejects when the caller is not a participant, and when the pair is malformed', async () => {
+    const worker = await makeUser('worker');
+    const mentor = await makeUser('mentor');
+    const other = await makeUser('mentor');
+    // Caller not in the pair.
+    await assert.rejects(
+      callFn('createMentorship', worker.token, {
+        participantIds: [mentor.uid, other.uid], tenantId: HUB, notes: 'n',
+        purpose: 'peer mentorship', actingRole: 'worker',
+      }),
+      (e) => e.code === 'invalid-argument',
+    );
+    // One participant.
+    await assert.rejects(
+      callFn('createMentorship', worker.token, {
+        participantIds: [worker.uid], tenantId: HUB, notes: 'n',
+        purpose: 'peer mentorship', actingRole: 'worker',
+      }),
+      (e) => e.code === 'invalid-argument',
+    );
+    // Duplicate participant.
+    await assert.rejects(
+      callFn('createMentorship', worker.token, {
+        participantIds: [worker.uid, worker.uid], tenantId: HUB, notes: 'n',
+        purpose: 'peer mentorship', actingRole: 'worker',
+      }),
+      (e) => e.code === 'invalid-argument',
+    );
+  });
+
+  it('rejects when the other participant has no live grant', async () => {
+    const worker = await makeUser('worker');
+    const bare = await auth.createUser({ email: `barem-${RUN}@example.test`, password: 'Test1234!' });
+    createdUids.push(bare.uid);
+    await assert.rejects(
+      callFn('createMentorship', worker.token, {
+        participantIds: [worker.uid, bare.uid], tenantId: HUB, notes: 'n',
+        purpose: 'peer mentorship', actingRole: 'worker',
+      }),
+      (e) => e.code === 'failed-precondition',
+    );
+  });
+
+  it('a navigator cannot create a mentorship (worker/mentor only)', async () => {
+    const worker = await makeUser('worker');
+    const nav = await makeUser('navigator');
+    await assert.rejects(
+      callFn('createMentorship', nav.token, {
+        participantIds: [nav.uid, worker.uid], tenantId: HUB, notes: 'n',
+        purpose: 'peer mentorship', actingRole: 'navigator',
       }),
       (e) => e.code === 'permission-denied',
     );
@@ -505,19 +671,29 @@ describe('requestExport auth gate (Phase 2)', () => {
     );
   });
 
-  it('a worker passes the auth gate (happy path needs real Storage)', async () => {
+  it('worker export writes a real bundle to Storage and returns a URL (happy path)', async () => {
     const worker = await makeUser('worker');
-    try {
-      const result = await callFn('requestExport', worker.token, { purpose: 'export my data', actingRole: 'worker' });
-      // Only reachable when a Storage emulator / real bucket is present.
-      assert.ok(typeof result.url === 'string' && result.url.startsWith('http'));
-    } catch (err) {
-      // In the emulator stack (no Storage emulator configured), the
-      // upload fails AFTER authorization — that is environmental, not
-      // an authorization failure. The auth gate passing is the assertion.
-      assert.notEqual(err.code, 'permission-denied', 'worker should pass the export auth gate');
-      assert.match(String(err.code), /internal|unknown|storage|not-found/);
-    }
+    // Seed one owned doc so the bundle is non-empty.
+    await db.collection('workers').add({
+      ownerId: worker.uid, tenantId: HUB, displayName: 'W', status: 'active',
+    });
+    const result = await callFn('requestExport', worker.token, { purpose: 'export my data', actingRole: 'worker' });
+    assert.equal(typeof result.url, 'string');
+    assert.ok(result.url.startsWith('http'));
+    assert.equal(typeof result.file, 'string');
+    assert.ok(result.file.startsWith(`exports/${worker.uid}/`));
+    // The object really exists in the (emulated) bucket: download + parse it.
+    const [contents] = await admin.storage().bucket().file(result.file).download();
+    const bundle = JSON.parse(contents.toString('utf8'));
+    assert.equal(bundle.ownerId, worker.uid);
+    assert.ok(Array.isArray(bundle.data.workers));
+    assert.ok(bundle.data.workers.some((d) => d.ownerId === worker.uid));
+    // Audit event recorded.
+    const events = await db.collection('accessEvents')
+      .where('subjectId', '==', worker.uid)
+      .where('action', '==', 'requestExport')
+      .get();
+    assert.ok(events.size >= 1);
   });
 });
 

@@ -149,7 +149,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Fail-closed: if the current acting grant is gone / not live,
       // drop back to the server's default acting grant.
       setActingRole((current) => {
-        if (!current) return current;
+        if (!current) {
+          // No acting capacity yet (e.g. first sign-in raced the
+          // invitation claim): fill in from fresh live grants if any
+          // exist. Never from claims alone — a live grant is required.
+          const defaultGrant = serverGrants.find((g) => g.id === payload.defaultGrantId);
+          if (defaultGrant && grantIsLiveClient(defaultGrant)) return defaultGrant.role;
+          const liveRoles = serverGrants.filter((g) => grantIsLiveClient(g)).map((g) => g.role);
+          return liveRoles.length > 0 ? defaultActingRole(liveRoles) : null;
+        }
         const stillLive = serverGrants.some(
           (g) => g.role === current && grantIsLiveClient(g),
         );
@@ -173,16 +181,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setUser(u);
       if (u) {
         // Ensure the caller's persons doc exists (server-side, exactly
-        // once). Fire-and-forget: a failure here must never block
-        // sign-in — the doc is not needed to render the session.
+        // once) and claim any pending invitation. AWAITED: the grants
+        // load below must run after the claim commits, otherwise a
+        // first-time sign-in reads grants before the claim lands and
+        // the session ends up with no acting capacity. A failure here
+        // must still never block sign-in — the doc is retried on the
+        // next page load.
         if (!personsEnsured.has(u.uid)) {
           personsEnsured.add(u.uid);
-          void ensureMyPerson().catch(() => {
+          await ensureMyPerson().catch(() => {
             // The persons doc will be retried on the next page load.
           });
         }
         try {
-          const token = await u.getIdTokenResult();
+          // Force-refresh: the token minted at account creation
+          // predates the just-committed claim, so its claims carry no
+          // roles. Refreshing pulls the claims the server just synced.
+          const token = await u.getIdTokenResult(true);
           const claims = token.claims as { role?: string; roles?: string[]; tenantId?: string };
           const rawRoles: string[] = Array.isArray(claims.roles)
             ? claims.roles

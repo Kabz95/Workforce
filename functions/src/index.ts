@@ -61,6 +61,8 @@ export {
   closeHandoffFn as closeHandoff,
   inviteMemberFn as inviteMember,
   ensureMyPersonFn as ensureMyPerson,
+  createSupervisionSessionFn as createSupervisionSession,
+  createMentorshipFn as createMentorship,
 } from './gateway';
 
 // Collections whose documents are owned by a worker (ownerId) and
@@ -332,6 +334,29 @@ async function buildExportBundle(uid: string): Promise<Record<string, unknown[]>
   bundle['handoffs'] = handoffs.docs.map((d) => ({ id: d.id, ...d.data() }));
   return bundle;
 }
+
+/**
+ * Download URL for an export object. In production this is a signed
+ * URL (7-day expiry). The Storage emulator cannot sign URLs (no
+ * private key in the emulator credential), so against the emulator we
+ * return the emulator's own download URL for the object instead.
+ */
+async function exportDownloadUrl(file: {
+  name: string;
+  bucket: { name: string };
+  getSignedUrl: (options: { action: 'read'; expires: number }) => Promise<[string]>;
+}): Promise<string> {
+  const emulatorHost = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+  if (emulatorHost) {
+    return `http://${emulatorHost}/v0/b/${file.bucket.name}/o/${encodeURIComponent(file.name)}?alt=media`;
+  }
+  const [url] = await file.getSignedUrl({
+    action: 'read',
+    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
+  });
+  return url;
+}
+
 /**
  * requestExport — bundle every document the caller owns, return a
  * signed download URL valid 7 days. Callable by the worker.
@@ -379,11 +404,10 @@ export const requestExport = onCall(async (request) => {
     .bucket()
     .file(`exports/${uid}/export-${Date.now()}.json`);
   await file.save(payload, { contentType: 'application/json' });
-  const [url] = await file.getSignedUrl({
-    action: 'read',
-    expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-  });
-  const result = { url };
+  const url = await exportDownloadUrl(file);
+  // The file path is returned alongside the URL so callers (and tests)
+  // can verify the stored object without parsing the signed URL.
+  const result = { url, file: file.name, expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000 };
   await db.runTransaction(async (tx) => {
     writeAccessEventInTx(tx, {
       subjectId: uid,
@@ -494,13 +518,18 @@ async function fetchStepDocs(
  * Apply one deletion-plan step to one document, inside the pass batch.
  * revokeConsent also strips the other party from the target's
  * sharedWith (the target is read first; a missing target is skipped,
- * never fails the pass).
+ * never fails the pass). The strip itself is DEFERRED: it is collected
+ * in `deferredStrips` and applied by runDeletionPass after the plan
+ * loop, skipping any target deleted in the same pass — otherwise the
+ * batch would delete then update the same entity, which Firestore
+ * rejects ("Cannot delete then update an entity in the same request").
  */
 async function applyDeletionStep(
   batch: FirebaseFirestore.WriteBatch,
   step: DeletionPlanStep,
   docSnap: FirebaseFirestore.QueryDocumentSnapshot,
   uid: string,
+  deferredStrips: Array<{ target: FirebaseFirestore.DocumentReference; stripUid: string }>,
 ): Promise<void> {
   const ref = docSnap.ref;
   const stamp = { updatedAt: FieldValue.serverTimestamp() };
@@ -544,10 +573,11 @@ async function applyDeletionStep(
       const target = db.collection(consent.resourceType).doc(consent.resourceId);
       const targetSnap = await target.get();
       if (targetSnap.exists) {
-        batch.update(target, {
-          sharedWith: FieldValue.arrayRemove(stripUid),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
+        // Deferred: runDeletionPass applies this after the plan loop,
+        // skipping targets deleted in the same pass (delete-then-update
+        // on one entity is rejected by Firestore). The doc is gone in
+        // that case, so the strip is moot.
+        deferredStrips.push({ target, stripUid });
       }
       return;
     }
@@ -583,10 +613,7 @@ async function runDeletionPass(
         .bucket()
         .file(`exports/${uid}/export-${Date.now()}.json`);
       await file.save(payload, { contentType: 'application/json' });
-      const [url] = await file.getSignedUrl({
-        action: 'read',
-        expires: Date.now() + 7 * 24 * 60 * 60 * 1000,
-      });
+      const url = await exportDownloadUrl(file);
       job.exportUrl = url;
       await jobRef.update({ exportUrl: url, updatedAt: FieldValue.serverTimestamp() });
     } catch (err) {
@@ -598,6 +625,11 @@ async function runDeletionPass(
   // 2. Deletion steps from the cursor, within the doc budget.
   let { stepIndex, lastDocId, processed, deleted, anonymised } = job;
   const batch = db.batch();
+  // revokeConsent target strips, deferred out of applyDeletionStep.
+  const deferredStrips: Array<{ target: FirebaseFirestore.DocumentReference; stripUid: string }> = [];
+  // Doc paths deleted in this pass — strips aimed at them are skipped
+  // (delete-then-update on one entity is rejected by Firestore).
+  const deletedPaths = new Set<string>();
   let docsInPass = 0;
   while (stepIndex < DELETION_PLAN.length && docsInPass < DELETION_BATCH_DOCS) {
     const step = DELETION_PLAN[stepIndex];
@@ -609,10 +641,12 @@ async function runDeletionPass(
       continue;
     }
     for (const docSnap of docs) {
-      await applyDeletionStep(batch, step, docSnap, uid);
+      await applyDeletionStep(batch, step, docSnap, uid, deferredStrips);
       lastDocId = docSnap.id;
-      if (step.action === 'delete') deleted += 1;
-      else anonymised += 1;
+      if (step.action === 'delete') {
+        deleted += 1;
+        deletedPaths.add(docSnap.ref.path);
+      } else anonymised += 1;
     }
     processed += docs.length;
     docsInPass += docs.length;
@@ -623,6 +657,15 @@ async function runDeletionPass(
     }
     // A full page means the budget is spent; the loop exits and the
     // next pass resumes this step from the cursor.
+  }
+  // Deferred sharedWith strips from revokeConsent steps, skipping any
+  // target deleted in this same pass.
+  for (const { target, stripUid } of deferredStrips) {
+    if (deletedPaths.has(target.path)) continue;
+    batch.update(target, {
+      sharedWith: FieldValue.arrayRemove(stripUid),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
   }
   const done = stepIndex >= DELETION_PLAN.length;
 
