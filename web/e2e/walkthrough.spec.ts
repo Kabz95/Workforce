@@ -195,9 +195,14 @@ test('Walkthrough: invitation signup + acceptance steps', async ({ page }, testI
   // Runs BEFORE deletion (step 8): the worker's data must still exist.
   // Self-sufficient: supervisor + mentor invitations are seeded here
   // (not in globalSetup), so this step does not depend on other specs.
+  // These users get their OWN emails (distinct from the globalSetup
+  // supervisor/mentor): the dashboards-wave1 spec signs up the
+  // globalSetup supervisor/mentor earlier in the same run, and a
+  // second signUp for the same email fails with
+  // auth/email-already-in-use, leaving the page on /login.
   await test.step('7. Supervision session + mentorship creation', async () => {
-    const supervisor: SeededUser = { email: `${seed.run}-supervisor@example.test`, password: 'Test1234!', role: 'supervisor' };
-    const mentor: SeededUser = { email: `${seed.run}-mentor@example.test`, password: 'Test1234!', role: 'mentor' };
+    const supervisor: SeededUser = { email: `${seed.run}-supervisor-walkthrough@example.test`, password: 'Test1234!', role: 'supervisor' };
+    const mentor: SeededUser = { email: `${seed.run}-mentor-walkthrough@example.test`, password: 'Test1234!', role: 'mentor' };
     await seedPendingInvitation(supervisor.email, 'supervisor');
     await seedPendingInvitation(mentor.email, 'mentor');
     // Supervisor + mentor sign up via their invitations (claim).
