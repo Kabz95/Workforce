@@ -54,6 +54,9 @@ jobs:
       - name: Kernel tests (no emulator needed)
         run: npm --prefix functions run test:kernel
 
+      - name: Support agent pure tests (no emulator needed)
+        run: npm --prefix functions run test:support
+
       - name: Emulator suites — rules + callable (retry once for the first-start trigger race)
         run: |
           for attempt in 1 2; do

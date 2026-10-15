@@ -684,3 +684,142 @@ describe('invitations (production onboarding)', () => {
     assert.deepEqual(result.claimed, []);
   });
 });
+
+describe('askSupportAgent (Phase 3, P3.1 — record-blind app support)', () => {
+  /** Mint an ID token for an email/password account (Auth emulator REST). */
+  async function mintTokenFor(email, password = 'Test1234!') {
+    const res = await fetch(
+      `http://${AUTH_HOST}/identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=fake-api-key`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, returnSecureToken: true }),
+      },
+    );
+    const { idToken } = await res.json();
+    if (!idToken) throw new Error(`Token mint failed for ${email}`);
+    return idToken;
+  }
+
+  /** An Auth user with NO claims and NO grants (bare account). */
+  async function makeBare(email) {
+    const user = await auth.createUser({ email, password: 'Test1234!' });
+    createdUids.push(user.uid);
+    return { uid: user.uid, email, token: await mintTokenFor(email) };
+  }
+
+  async function supportEventsFor(uid) {
+    return db.collection('accessEvents')
+      .where('subjectId', '==', uid)
+      .where('action', '==', 'askSupport')
+      .get();
+  }
+
+  it('unauthenticated callers are denied', async () => {
+    await assert.rejects(
+      fetch(fnUrl('askSupportAgent'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ data: { question: 'How do I export my data?' } }),
+      }).then(async (res) => {
+        const body = await res.json();
+        if (body.error) {
+          const err = new Error(body.error.message);
+          err.code = body.error.status;
+          throw err;
+        }
+        return body.result;
+      }),
+      (e) => (e.code || '').toLowerCase() === 'unauthenticated',
+    );
+  });
+
+  it('a bare person (no grants) can ask support — the authorizeCommand deviation', async () => {
+    const bare = await makeBare(`bare-support-${RUN}-${Math.random().toString(36).slice(2, 8)}@example.test`);
+    const result = await callFn('askSupportAgent', bare.token, { question: 'How do I export my data?' });
+    assert.equal(result.category, 'process');
+    assert.ok(result.answer.length > 0);
+    assert.ok(Array.isArray(result.sources) && result.sources.length > 0);
+  });
+
+  it('app-help answers are grounded, cited, and audited WITHOUT the verbatim question', async () => {
+    const worker = await makeUser('worker');
+    const marker = `zebraquux-${RUN}-${Math.random().toString(36).slice(2, 8)}`;
+    // The marker is a nonsense token: if any audit event stored the
+    // question, the marker would appear in Firestore.
+    const result = await callFn('askSupportAgent', worker.token, {
+      question: `How do I export my data? ${marker}`,
+      actingRole: 'worker',
+    });
+    assert.ok(result.answer.length > 0);
+    assert.ok(result.sources.some((s) => s.id === 'export'));
+    const events = await supportEventsFor(worker.uid);
+    assert.ok(events.size >= 1);
+    const blob = JSON.stringify(events.docs.map((d) => d.data()));
+    assert.ok(!blob.includes(marker), 'audit events must never contain the verbatim question');
+    assert.ok(!blob.includes('How do I export'), 'audit events must never contain the question text');
+    const latest = events.docs[events.docs.length - 1].data();
+    assert.equal(latest.detail.category, result.category);
+    assert.equal(latest.purpose, 'app support');
+  });
+
+  it('guardrail blocks personal data at the callable (no Vertex, no storage of the payload)', async () => {
+    const worker = await makeUser('worker');
+    const result = await callFn('askSupportAgent', worker.token, {
+      question: 'my email is jane@example.com, what does my record say?',
+    });
+    assert.equal(result.category, 'blocked-payload');
+    assert.equal(result.outcome, 'refused-personal-data');
+    assert.equal(result.vertexUsed, false);
+    const events = await supportEventsFor(worker.uid);
+    const blob = JSON.stringify(events.docs.map((d) => d.data()));
+    assert.ok(!blob.includes('jane@example.com'), 'blocked payload must never be stored');
+  });
+
+  it('crisis input returns crisis resources, never counseling', async () => {
+    const worker = await makeUser('worker');
+    const result = await callFn('askSupportAgent', worker.token, {
+      question: 'I want to kill myself',
+    });
+    assert.equal(result.category, 'crisis');
+    assert.equal(result.outcome, 'crisis');
+    assert.match(result.answer, /988/);
+    assert.match(result.answer, /911/);
+    assert.ok(Array.isArray(result.resources) && result.resources.length > 0);
+  });
+
+  it('consequential-action requests are refused but steps are given', async () => {
+    const worker = await makeUser('worker');
+    const result = await callFn('askSupportAgent', worker.token, {
+      question: 'Please delete my data for me',
+    });
+    assert.equal(result.outcome, 'refused-action');
+    assert.match(result.answer, /cannot act on accounts/);
+  });
+
+  it('feedback writes an audit event with category + boolean only (no text)', async () => {
+    const worker = await makeUser('worker');
+    const result = await callFn('submitSupportFeedback', worker.token, {
+      helpful: false,
+      category: 'process',
+    });
+    assert.equal(result.ok, true);
+    const snap = await db.collection('accessEvents')
+      .where('subjectId', '==', worker.uid)
+      .where('action', '==', 'supportFeedback')
+      .get();
+    assert.ok(snap.size >= 1);
+    const detail = snap.docs[snap.docs.length - 1].data().detail;
+    assert.equal(detail.category, 'process');
+    assert.equal(detail.feedbackHelpful, false);
+    assert.ok(!('question' in detail) && !('text' in detail));
+  });
+
+  it('oversized questions are rejected', async () => {
+    const worker = await makeUser('worker');
+    await assert.rejects(
+      callFn('askSupportAgent', worker.token, { question: 'x'.repeat(1001) }),
+      (e) => e.code === 'invalid-argument',
+    );
+  });
+});

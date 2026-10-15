@@ -14,6 +14,7 @@ import Governance from './pages/Governance';
 import Aggregates from './pages/Aggregates';
 import AuditLog from './pages/AuditLog';
 import MyGrants from './pages/MyGrants';
+import Support from './pages/Support';
 
 export default function App() {
   return (
@@ -106,6 +107,14 @@ export default function App() {
             element={
               <ProtectedRoute>
                 <MyGrants />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/support"
+            element={
+              <ProtectedRoute>
+                <Support />
               </ProtectedRoute>
             }
           />

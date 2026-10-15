@@ -248,6 +248,8 @@ const createHandoffFn = httpsCallable(functions, 'createHandoff');
 const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
 const closeHandoffFn = httpsCallable(functions, 'closeHandoff');
 const inviteMemberFn = httpsCallable(functions, 'inviteMember');
+const askSupportAgentFn = httpsCallable(functions, 'askSupportAgent');
+const submitSupportFeedbackFn = httpsCallable(functions, 'submitSupportFeedback');
 
 export async function grantConsent(
   granterId: string,
@@ -749,4 +751,60 @@ export async function listAdaptationLogs(tenantId: string): Promise<WithId<Adapt
   const q = query(collection(db, 'adaptationLogs'), where('tenantId', '==', tenantId));
   const snap = await getDocs(q);
   return snap.docs.map((d) => toDoc<AdaptationLog>(d));
+}
+
+export interface SupportSource {
+  id: string;
+  title: string;
+  route: string;
+  version: string;
+}
+
+export interface SupportResource {
+  name: string;
+  detail: string;
+}
+
+export interface SupportAnswerResult {
+  answer: string;
+  category: string;
+  outcome: string;
+  sources: SupportSource[];
+  route: string;
+  vertexUsed: boolean;
+  resources: SupportResource[];
+}
+
+/**
+ * Ask the app support assistant (Phase 3, P3.1). Record-blind: the
+ * server never receives or stores the question text beyond answering
+ * it — the audit event carries category + outcome only. The client
+ * sends the question and an optional sanitized error code (no stack
+ * traces, no record content).
+ */
+export async function askSupportAgent(
+  question: string,
+  acting?: ActingInput & { errorCode?: string },
+): Promise<SupportAnswerResult> {
+  const result = await askSupportAgentFn({
+    question,
+    errorCode: acting?.errorCode ?? null,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+  });
+  return result.data as SupportAnswerResult;
+}
+
+/** Helpful / not-helpful for a support answer. Category + boolean only — no text. */
+export async function submitSupportFeedback(
+  helpful: boolean,
+  category: string,
+  acting?: ActingInput,
+): Promise<void> {
+  await submitSupportFeedbackFn({
+    helpful,
+    category,
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+  });
 }

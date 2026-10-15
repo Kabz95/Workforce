@@ -708,3 +708,46 @@ describe('handoff slice: coordinator offers, navigator accepts (Phase 2)', () =>
     );
   });
 });
+
+describe('developer suggestions (Phase 3, P3.2 — server-written draft briefs)', () => {
+  async function seedBriefs() {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('developerSuggestions/brief-hub').set({
+        tenantId: HUB, status: 'draft', categories: [], suggestions: [],
+      });
+      await db.doc('developerSuggestions/brief-other').set({
+        tenantId: OTHER_HUB, status: 'draft', categories: [], suggestions: [],
+      });
+    });
+  }
+
+  it('clients can never create, update, or delete briefs', async () => {
+    await seedBriefs();
+    await assert.rejects(
+      analyst().firestore().collection('developerSuggestions').add({ tenantId: HUB, status: 'draft' }),
+    );
+    await assert.rejects(
+      council().firestore().doc('developerSuggestions/brief-hub').update({ status: 'accepted' }),
+    );
+    await assert.rejects(
+      council().firestore().doc('developerSuggestions/brief-hub').delete(),
+    );
+  });
+
+  it('analyst / council / backboneLead read cross-tenant briefs', async () => {
+    await seedBriefs();
+    for (const reader of [analyst(), council()]) {
+      const snap = await reader.firestore().doc('developerSuggestions/brief-other').get();
+      assert.equal(snap.exists, true);
+    }
+  });
+
+  it('hub roles read own-tenant briefs but not another hub briefs; workers cannot read briefs', async () => {
+    await seedBriefs();
+    const own = await coordinator().firestore().doc('developerSuggestions/brief-hub').get();
+    assert.equal(own.exists, true);
+    await assert.rejects(coordinator().firestore().doc('developerSuggestions/brief-other').get());
+    await assert.rejects(worker1().firestore().doc('developerSuggestions/brief-hub').get());
+  });
+});
