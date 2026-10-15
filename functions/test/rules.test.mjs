@@ -632,6 +632,168 @@ describe('supervision sessions (Phase 2)', () => {
   });
 });
 
+describe('mentorships rules (Phase 2 completion)', () => {
+  const mentor = () => ctx('mentor-1', { roles: ['mentor'], tenantId: HUB });
+  const mentorOtherHub = () => ctx('mentor-9', { roles: ['mentor'], tenantId: OTHER_HUB });
+
+  async function seedPair() {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('mentorships/ment-pair-1').set({
+        tenantId: HUB, participantIds: ['mentor-1', 'worker-1'], sharedWith: [], notes: 'n',
+      });
+      await db.doc('mentorships/ment-pair-shared').set({
+        tenantId: HUB, participantIds: ['mentor-2', 'worker-1'], sharedWith: ['mentor-1'], notes: 'n',
+      });
+    });
+  }
+
+  it('participant creates / reads / updates notes on their mentorship', async () => {
+    const ref = await mentor().firestore().collection('mentorships').add({
+      tenantId: HUB, participantIds: ['mentor-1', 'worker-1'], sharedWith: [], notes: 'n',
+    });
+    assert.ok(ref.id);
+    assert.equal((await ref.get()).exists, true);
+    await ref.update({ notes: 'updated' });
+  });
+
+  it('a non-participant cannot create a mentorship, and a mentorship is exactly a pair', async () => {
+    const db = mentor().firestore();
+    // Caller not in participantIds.
+    await assert.rejects(
+      db.collection('mentorships').add({
+        tenantId: HUB, participantIds: ['mentor-2', 'worker-1'], sharedWith: [], notes: 'n',
+      }),
+    );
+    // One participant.
+    await assert.rejects(
+      db.collection('mentorships').add({
+        tenantId: HUB, participantIds: ['mentor-1'], sharedWith: [], notes: 'n',
+      }),
+    );
+    // Three participants.
+    await assert.rejects(
+      db.collection('mentorships').add({
+        tenantId: HUB, participantIds: ['mentor-1', 'worker-1', 'worker-2'], sharedWith: [], notes: 'n',
+      }),
+    );
+    // Duplicate participant.
+    await assert.rejects(
+      db.collection('mentorships').add({
+        tenantId: HUB, participantIds: ['mentor-1', 'mentor-1'], sharedWith: [], notes: 'n',
+      }),
+    );
+  });
+
+  it('client cannot create a mentorship pre-shared, and participant cannot change the core', async () => {
+    const db = mentor().firestore();
+    await assert.rejects(
+      db.collection('mentorships').add({
+        tenantId: HUB, participantIds: ['mentor-1', 'worker-1'],
+        sharedWith: ['worker-2'], notes: 'n',
+      }),
+    );
+    await seedPair();
+    const ref = db.doc('mentorships/ment-pair-1');
+    await assert.rejects(ref.update({ participantIds: ['mentor-1'] }));
+    await assert.rejects(ref.update({ sharedWith: ['worker-2'] }));
+    await assert.rejects(ref.update({ tenantId: OTHER_HUB }));
+    // A legitimate notes update still works.
+    await ref.update({ notes: 'ok' });
+  });
+
+  it('non-participant cannot read; sharedWith reader can; cross-tenant cannot read', async () => {
+    await seedPair();
+    const outsider = ctx('mentor-3', { roles: ['mentor'], tenantId: HUB });
+    await assert.rejects(outsider.firestore().doc('mentorships/ment-pair-1').get());
+    // mentor-1 is in sharedWith on ment-pair-shared, not in participantIds.
+    const shared = await mentor().firestore().doc('mentorships/ment-pair-shared').get();
+    assert.equal(shared.exists, true);
+    await assert.rejects(mentorOtherHub().firestore().doc('mentorships/ment-pair-1').get());
+  });
+
+  it('participant can list their mentorships; non-participant list is empty', async () => {
+    await seedPair();
+    const mine = await mentor().firestore().collection('mentorships')
+      .where('participantIds', 'array-contains', 'mentor-1')
+      .where('tenantId', '==', HUB)
+      .get();
+    assert.ok(mine.docs.some((d) => d.id === 'ment-pair-1'));
+    const outsider = ctx('mentor-3', { roles: ['mentor'], tenantId: HUB });
+    const none = await outsider.firestore().collection('mentorships')
+      .where('participantIds', 'array-contains', 'mentor-3')
+      .where('tenantId', '==', HUB)
+      .get();
+    assert.equal(none.docs.length, 0);
+  });
+
+  it('either participant may end (delete) the mentorship; a non-participant may not', async () => {
+    await seedPair();
+    const outsider = ctx('mentor-3', { roles: ['mentor'], tenantId: HUB });
+    await assert.rejects(outsider.firestore().doc('mentorships/ment-pair-1').delete());
+    await mentor().firestore().doc('mentorships/ment-pair-1').delete();
+    const gone = await testEnv.withSecurityRulesDisabled(async (context) =>
+      context.firestore().doc('mentorships/ment-pair-1').get(),
+    );
+    assert.equal(gone.exists, false);
+  });
+
+  it('worker creates a mentorships consent (allowlist includes it)', async () => {
+    const ref = await worker1().firestore().collection('consents').add({
+      granterId: 'worker-1', granteeId: 'mentor-1', tenantId: HUB,
+      scope: 'read:mentorships', resourceType: 'mentorships', resourceId: 'ment-pair-1',
+      grantedAt: new Date(), expiresAt: new Date(Date.now() + 86400000), revokedAt: null,
+      purpose: 'peer mentorship',
+    });
+    assert.ok(ref.id);
+  });
+});
+
+describe('privacyLead oversight (Phase 3)', () => {
+  it('privacyLead CANNOT enumerate consents they are not party to', async () => {
+    // consent-1 belongs to worker-1 / worker-2; the privacy lead is
+    // neither granter nor grantee, so the list rule excludes it.
+    const snap = await privacyLead().firestore().collection('consents').get();
+    assert.equal(snap.docs.length, 0);
+    await assert.rejects(privacyLead().firestore().doc('consents/consent-1').get());
+  });
+
+  it('privacyLead CAN list hub access events + complaints; NOT cross-hub', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      const db = context.firestore();
+      await db.doc('accessEvents/event-other').set({
+        subjectId: 'worker-9', actorId: 'worker-9', action: 'grantAccess',
+        resourceType: 'pathwaySteps', resourceId: 'step-9', actingRole: 'worker',
+        actingGrantId: 'grant-9', purpose: 'test', correlationId: 'c9',
+        result: 'allowed', createdAt: new Date(), tenantId: OTHER_HUB,
+      });
+      await db.doc('complaints/complaint-1').set({
+        tenantId: HUB, complainantId: 'worker-1', summary: 's', status: 'open',
+      });
+    });
+    const events = await privacyLead().firestore().collection('accessEvents')
+      .where('tenantId', '==', HUB).get();
+    assert.ok(events.docs.length >= 1);
+    const other = await privacyLead().firestore().collection('accessEvents')
+      .where('tenantId', '==', OTHER_HUB).get();
+    assert.equal(other.docs.length, 0);
+    const complaints = await privacyLead().firestore().collection('complaints')
+      .where('tenantId', '==', HUB).get();
+    assert.equal(complaints.docs.length, 1);
+  });
+
+  it('privacyLead reads tenant-scoped aggregates; worker cannot', async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc('aggregates/agg-hub').set({
+        tenantId: HUB, metric: 'm', period: 'p', value: 10, breakdown: {},
+      });
+    });
+    const own = await privacyLead().firestore().doc('aggregates/agg-hub').get();
+    assert.equal(own.exists, true);
+    await assert.rejects(worker1().firestore().doc('aggregates/agg-hub').get());
+  });
+});
+
 describe('persons creation (production onboarding)', () => {
   it('owner with claims CANNOT create their own persons doc (server-only)', async () => {
     await assert.rejects(

@@ -29,7 +29,7 @@ const HUB = 'hub-1';
 const RUN = `e2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 const PASSWORD = 'Test1234!';
 
-type Role = 'worker' | 'navigator' | 'hubCoordinator';
+type Role = 'worker' | 'navigator' | 'hubCoordinator' | 'supervisor' | 'mentor' | 'privacyLead';
 
 interface InvitedUser {
   email: string;
@@ -61,10 +61,24 @@ export default async function globalSetup(): Promise<void> {
   const db = admin.firestore();
   const auth = admin.auth();
 
+  // Build a seed user for a role. Production stores granteeEmail
+  // lowercased and the claim query lowercases the sign-in email;
+  // Firestore string equality is case-sensitive, so a mixed-case
+  // seed email (e.g. hubCoordinator, privacyLead) could never
+  // match. Build every seed email from the lowercased role slug.
+  // The `role` field stays canonical.
+  function makeUser(role: Role): InvitedUser {
+    return { email: `${RUN}-${role.toLowerCase()}@example.test`, password: PASSWORD, role };
+  }
+
   const users: Record<Role, InvitedUser> = {
-    worker: { email: `${RUN}-worker@example.test`, password: PASSWORD, role: 'worker' },
-    navigator: { email: `${RUN}-navigator@example.test`, password: PASSWORD, role: 'navigator' },
-    hubCoordinator: { email: `${RUN}-hubCoordinator@example.test`, password: PASSWORD, role: 'hubCoordinator' },
+    worker: makeUser('worker'),
+    navigator: makeUser('navigator'),
+    hubCoordinator: makeUser('hubCoordinator'),
+    // Phase 3 wave 1 dashboards (dashboards-wave1.spec.ts).
+    supervisor: makeUser('supervisor'),
+    mentor: makeUser('mentor'),
+    privacyLead: makeUser('privacyLead'),
   };
 
   for (const role of Object.keys(users) as Role[]) {
@@ -102,9 +116,26 @@ export default async function globalSetup(): Promise<void> {
   }
 
   const outPath = join(dirname(fileURLToPath(import.meta.url)), '.e2e-users.json');
+  // The seed file uses the specs' key names: `coordinator` for the
+  // hubCoordinator invitation (the walkthrough reads that key).
   writeFileSync(
     outPath,
-    JSON.stringify({ run: RUN, hub: HUB, users }, null, 2),
+    JSON.stringify(
+      {
+        run: RUN,
+        hub: HUB,
+        users: {
+          worker: users.worker,
+          navigator: users.navigator,
+          coordinator: users.hubCoordinator,
+          supervisor: users.supervisor,
+          mentor: users.mentor,
+          privacyLead: users.privacyLead,
+        },
+      },
+      null,
+      2,
+    ),
   );
-  console.log(`[e2e seed] run=${RUN} — seeded 3 pending invitations`);
+  console.log(`[e2e seed] run=${RUN} — seeded 6 pending invitations`);
 }

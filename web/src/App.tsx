@@ -88,7 +88,10 @@ export default function App() {
           <Route
             path="/aggregates"
             element={
-              <ProtectedRoute roles={['analyst', 'steeringCircle', 'council']}>
+              // Route roles mirror the aggregates rules block: analyst /
+              // council / backboneLead read cross-hub; steeringCircle /
+              // hubCoordinator / privacyLead read their own hub.
+              <ProtectedRoute roles={['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead']}>
                 <Aggregates />
               </ProtectedRoute>
             }

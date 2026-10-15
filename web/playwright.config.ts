@@ -29,7 +29,7 @@ const EMULATOR_FIREBASE_ENV = [
 
 export default defineConfig({
   testDir: './e2e',
-  testMatch: 'walkthrough.spec.ts',
+  testMatch: ['walkthrough.spec.ts', 'dashboards-wave1.spec.ts'],
   timeout: 300_000, // one test, eight steps incl. the deletion job
   expect: { timeout: 15_000 },
   fullyParallel: false,
