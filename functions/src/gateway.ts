@@ -315,6 +315,9 @@ export const requestRoleGrantFn = onCall(async (request) => {
   if (!data.role || !data.scopeType || !data.scopeId || !data.tenantId) {
     throw new HttpsError('invalid-argument', 'role, scopeType, scopeId, tenantId are required.');
   }
+  // Narrowed here (the guard above threw otherwise): the grant — and
+  // its audit event — belong to this tenant.
+  const grantTenantId = data.tenantId;
   if (data.role === 'systemAdmin') {
     throw new HttpsError(
       'permission-denied',
@@ -352,6 +355,7 @@ export const requestRoleGrantFn = onCall(async (request) => {
       action: 'requestRoleGrant',
       resourceType: 'roleGrant',
       resourceId: ref.id,
+      tenantId: grantTenantId,
       actingRole: 'self-request',
       actingGrantId: null,
       purpose: 'request a role grant',
@@ -387,6 +391,9 @@ export const createRoleGrantFn = onCall(async (request) => {
       'subjectId, role, scopeType, scopeId, tenantId, basis are required.',
     );
   }
+  // Narrowed here (the guard above threw otherwise): the grant — and
+  // its audit event — belong to this tenant.
+  const grantTenantId = data.tenantId;
   const ctx = await resolveCommandContext(
     caller,
     { actingGrantId: data.actingGrantId ?? null, actingRole: data.actingRole ?? null, tenantId: data.tenantId },
@@ -464,6 +471,7 @@ export const createRoleGrantFn = onCall(async (request) => {
       action: status === 'active' ? 'createRoleGrant' : 'createRoleGrant-needsReview',
       resourceType: 'roleGrant',
       resourceId: ref.id,
+      tenantId: grantTenantId,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
       purpose: data.purpose ?? 'grant a role',
@@ -516,6 +524,9 @@ export const inviteMemberFn = onCall(async (request) => {
       'granteeEmail, role, scopeType, scopeId, tenantId, basis are required.',
     );
   }
+  // Narrowed here (the guard above threw otherwise): the invitation — and
+  // its audit event — belong to this tenant.
+  const grantTenantId = data.tenantId;
   const granteeEmail = data.granteeEmail.trim().toLowerCase();
   if (!granteeEmail.includes('@')) {
     throw new HttpsError('invalid-argument', 'granteeEmail must be an email address.');
@@ -625,6 +636,7 @@ export const inviteMemberFn = onCall(async (request) => {
       action: 'inviteMember',
       resourceType: 'roleGrant',
       resourceId: ref.id,
+      tenantId: grantTenantId,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
       purpose: data.purpose ?? 'invite a member',
@@ -695,6 +707,7 @@ export const resolveRoleGrantFn = onCall(async (request) => {
       action: data.decision === 'approve' ? 'approveRoleGrant' : 'denyRoleGrant',
       resourceType: 'roleGrant',
       resourceId: ref.id,
+      tenantId: grant.tenantId,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
       purpose,
@@ -756,6 +769,7 @@ export const revokeRoleGrantFn = onCall(async (request) => {
       action: 'revokeRoleGrant',
       resourceType: 'roleGrant',
       resourceId: ref.id,
+      tenantId: grant.tenantId,
       actingRole: actingGrant?.role ?? 'self-relinquish',
       actingGrantId: actingGrant?.id ?? null,
       purpose,
@@ -808,6 +822,7 @@ export const declareConflictFn = onCall(async (request) => {
       action: 'declareConflict',
       resourceType: 'conflictDeclaration',
       resourceId: ref.id,
+      tenantId,
       actingRole: 'self',
       actingGrantId: null,
       purpose,
@@ -937,6 +952,7 @@ export const createHandoffFn = onCall(async (request) => {
       action: 'createHandoff',
       resourceType: 'handoff',
       resourceId: ref.id,
+      tenantId: handoffTenantId,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
       purpose: handoffPurpose,
@@ -1000,6 +1016,7 @@ export const respondHandoffFn = onCall(async (request) => {
       action: data.decision === 'accept' ? 'acceptHandoff' : 'declineHandoff',
       resourceType: 'handoff',
       resourceId: ref.id,
+      tenantId: h.tenantId,
       actingRole: recipientGrant.role,
       actingGrantId: recipientGrant.id ?? null,
       purpose,
@@ -1064,6 +1081,7 @@ export const closeHandoffFn = onCall(async (request) => {
       action: 'closeHandoff',
       resourceType: 'handoff',
       resourceId: ref.id,
+      tenantId: h.tenantId,
       actingRole: recipientGrant.role,
       actingGrantId: recipientGrant.id ?? null,
       purpose,
@@ -1164,6 +1182,7 @@ export const createSupervisionSessionFn = onCall(async (request) => {
       action: 'createSupervisionSession',
       resourceType: 'supervisionSession',
       resourceId: ref.id,
+      tenantId: sessionTenantId,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
       purpose,
@@ -1275,6 +1294,7 @@ export const createMentorshipFn = onCall(async (request) => {
       action: 'createMentorship',
       resourceType: 'mentorship',
       resourceId: ref.id,
+      tenantId: mentorshipTenantId,
       actingRole: actingGrant.role,
       actingGrantId: actingGrant.id ?? null,
       purpose,
@@ -1372,6 +1392,7 @@ export const ensureMyPersonFn = onCall(async (request) => {
           action: 'claimInvitation',
           resourceType: 'roleGrant',
           resourceId: doc.id,
+          tenantId: inv.tenantId ?? caller.claimsTenantId ?? 'network',
           actingRole: 'self',
           actingGrantId: null,
           purpose: 'claim an invitation',
@@ -1410,6 +1431,7 @@ export const ensureMyPersonFn = onCall(async (request) => {
       action: 'ensurePerson',
       resourceType: 'person',
       resourceId: caller.uid,
+      tenantId: claimedInTx.length > 0 ? claimedInTx[0].tenantId : (caller.claimsTenantId ?? 'network'),
       actingRole: 'self',
       actingGrantId: null,
       purpose,

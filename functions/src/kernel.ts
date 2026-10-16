@@ -1030,6 +1030,14 @@ export interface AccessEventInput {
   action: string;
   resourceType: string;
   resourceId: string;
+  /**
+   * Tenant (hub) the audited resource belongs to. Stamped from the
+   * server-side resource/grant/job document — never from raw client
+   * input — so Privacy Lead oversight (`listHubAccessEvents`,
+   * `where tenantId ==`) sees exactly this hub's events. 'network'
+   * only for tenantless system/support events.
+   */
+  tenantId: string;
   actingRole: string;
   actingGrantId: string | null;
   purpose: string;

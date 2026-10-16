@@ -438,7 +438,7 @@ describe('legacy migration map', () => {
 });
 
 describe('access events', () => {
-  it('buildAccessEvent stamps acting role, grant, correlation, result', () => {
+  it('buildAccessEvent stamps acting role, grant, correlation, result, tenant', () => {
     const event = buildAccessEvent(
       {
         subjectId: 'user-1',
@@ -446,6 +446,7 @@ describe('access events', () => {
         action: 'grantAccess',
         resourceType: 'pathwaySteps',
         resourceId: 'step-1',
+        tenantId: 'hub-1',
         actingRole: 'worker',
         actingGrantId: 'grant-1',
         purpose: 'share a record',
@@ -459,6 +460,9 @@ describe('access events', () => {
     assert.equal(event.correlationId, 'corr-1');
     assert.equal(event.result, 'allowed');
     assert.equal(event.createdAt, '2026-10-13T00:00:00.000Z');
+    // F4: the tenant stamp is top-level so Privacy Lead oversight
+    // (listHubAccessEvents, where tenantId ==) can find the event.
+    assert.equal(event.tenantId, 'hub-1');
   });
 });
 
