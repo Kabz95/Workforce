@@ -28,9 +28,11 @@ export default function ActingRoleIndicator() {
     <div className="acting-indicator" role="status">
       <span>
         Acting as: <strong>{ROLE_LABELS[actingRole]}</strong>
-        {' '}· Scope: <strong>{scope}</strong>
-        {' '}· Hub: {tenantId}
       </span>
+      <span>
+        Scope: <strong>{scope}</strong>
+      </span>
+      <span>Hub: {tenantId}</span>
       <span className="muted">
         Every action is recorded with this role.
         {grantsSource === 'claims-fallback' && ' · Grants unverified — claims fallback.'}

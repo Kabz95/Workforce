@@ -3,10 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>Peer Support Workforce Network</title>
     <meta name="description" content="Platform for the National Peer Support Workforce, Practice and Learning Network." />
     <meta property="og:title" content="Peer Support Workforce Network" />
     <meta property="og:description" content="Platform for the National Peer Support Workforce, Practice and Learning Network." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <script>
+      // WF-DS 0.1 theme: apply the stored Light / Auto / Dark choice before
+      // first paint. Auto = no data-theme attribute (system decides).
+      try {
+        var t = window.localStorage.getItem('wf-theme');
+        if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      } catch (e) { /* private mode: fall back to system theme */ }
+    </script>
   </head>
   <body>
     <div id="root"></div>

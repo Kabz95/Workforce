@@ -94,7 +94,7 @@ export default function HubCoordinatorDashboard() {
   for (const g of activeGrants) byRole.set(g.role, (byRole.get(g.role) ?? 0) + 1);
 
   return (
-    <div>
+    <div className="dashboard">
       <ErrorNotice error={error} />
       <section className="card">
         <h2>Attention queue</h2>

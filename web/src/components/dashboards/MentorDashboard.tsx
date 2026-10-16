@@ -82,7 +82,7 @@ export default function MentorDashboard() {
   const sharedOnly = shared.filter((s) => !mentorships.some((m) => m.id === s.id));
 
   return (
-    <div data-testid="mentor-dashboard">
+    <div className="dashboard" data-testid="mentor-dashboard">
       <ErrorNotice error={error} />
       <section className="card">
         <h2>Attention queue</h2>
