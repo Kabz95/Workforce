@@ -323,6 +323,35 @@ describe('handoff flows (Phase 2)', () => {
       (e) => e.code === 'permission-denied',
     );
   });
+
+  it('F5: createHandoff rejects free-text payloadSummary (story content)', async () => {
+    const worker = await makeUser('worker');
+    const coord = await makeUser('hubCoordinator');
+    const nav = await makeUser('navigator');
+    await assert.rejects(
+      callFn('createHandoff', coord.token, {
+        workerId: worker.uid,
+        recipientId: nav.uid,
+        recipientRole: 'navigator',
+        purpose: 'handoff coordination',
+        payloadSummary: 'she told me she feels unsafe at home',
+        tenantId: HUB,
+        actingRole: 'hubCoordinator',
+      }),
+      (e) => e.code === 'invalid-argument' && /payloadSummary/.test(e.message),
+    );
+    // A routing label is accepted.
+    const created = await callFn('createHandoff', coord.token, {
+      workerId: worker.uid,
+      recipientId: nav.uid,
+      recipientRole: 'navigator',
+      purpose: 'handoff coordination',
+      payloadSummary: 'follow-up requested',
+      tenantId: HUB,
+      actingRole: 'hubCoordinator',
+    });
+    assert.equal(created.status, 'offered');
+  });
 });
 
 describe('createSupervisionSession (Phase 2 completion)', () => {

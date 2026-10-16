@@ -37,6 +37,8 @@ const {
   transitionHandoff,
   validateGrantTransition,
   validateHandoffParties,
+  validatePayloadSummary,
+  HANDOFF_PAYLOAD_SUMMARIES,
 } = require('../lib/kernel.js');
 
 const TENANT = 'hub-1';
@@ -398,6 +400,29 @@ describe('handoff state machine + parties', () => {
       validateHandoffParties({ workerId: 'w', senderId: 's', recipientId: 's' }).ok,
       false,
     );
+  });
+});
+
+describe('handoff payloadSummary (F5: closed enum, no free text)', () => {
+  it('accepts empty and every routing label', () => {
+    for (const label of HANDOFF_PAYLOAD_SUMMARIES) {
+      assert.equal(validatePayloadSummary(label).ok, true, JSON.stringify(label));
+    }
+  });
+
+  it('rejects free-text story content, however short', () => {
+    assert.equal(
+      validatePayloadSummary('she told me she feels unsafe at home').ok,
+      false,
+    );
+    assert.equal(validatePayloadSummary('e2e handoff').ok, false);
+  });
+
+  it('rejects near-misses and non-strings', () => {
+    assert.equal(validatePayloadSummary('First-contact navigation').ok, false);
+    assert.equal(validatePayloadSummary(' follow-up requested').ok, false);
+    assert.equal(validatePayloadSummary(null).ok, false);
+    assert.equal(validatePayloadSummary(42).ok, false);
   });
 });
 

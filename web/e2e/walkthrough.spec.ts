@@ -122,7 +122,7 @@ test('Walkthrough: invitation signup + acceptance steps', async ({ page }, testI
     await page.getByTestId('handoff-recipient-id').fill(navigatorUid);
     await page.getByTestId('handoff-recipient-role').selectOption('navigator');
     await page.getByTestId('handoff-purpose').selectOption('handoff coordination');
-    await page.getByTestId('handoff-summary').fill('e2e handoff');
+    await page.getByTestId('handoff-summary').selectOption('follow-up requested');
     await page.getByTestId('handoff-offer-submit').click();
     await expect(page.getByTestId('notice')).toContainText('Handoff offered');
     await expect(page.getByTestId('handoffs-sent')).toContainText('offered');

@@ -195,7 +195,18 @@ service cloud.firestore {
         && request.resource.data.senderRole in claimRoles()
         && request.resource.data.senderId != request.resource.data.workerId
         && request.resource.data.recipientId != request.resource.data.workerId
-        && request.resource.data.senderId != request.resource.data.recipientId;
+        && request.resource.data.senderId != request.resource.data.recipientId
+        // F5: payloadSummary is a closed enum of routing labels.
+        // Free text is rejected here too, because a direct client
+        // write bypasses the createHandoff callable. A handoff must
+        // never carry the worker's story.
+        && request.resource.data.get('payloadSummary', '') in [
+          '', 'first-contact navigation', 'intake received',
+          'ready for assignment', 'awaiting mentor match',
+          'supervision requested', 'certification next step',
+          'pathway review requested', 'follow-up requested',
+          'information only',
+        ];
       allow update: if signedIn()
         && uid() == resource.data.recipientId
         && storedTenantMatches(resource.data)

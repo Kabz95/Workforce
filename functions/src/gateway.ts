@@ -39,6 +39,7 @@ import {
   transitionHandoff,
   validateGrantTransition,
   validateHandoffParties,
+  validatePayloadSummary,
   type AnyRole,
   type GrantStatus,
   type Handoff,
@@ -917,6 +918,13 @@ export const createHandoffFn = onCall(async (request) => {
     recipientId: recipientId,
   });
   if (!parties.ok) throw new HttpsError('invalid-argument', parties.reason);
+  // F5: payloadSummary is a closed enum of routing labels (kernel).
+  // Free text is rejected — a handoff must never carry the worker's
+  // story. No worker-consent gate is added here: by design the handoff
+  // is coordination metadata only, and the record itself travels
+  // through the worker's consent grant, never through the handoff.
+  const summaryCheck = validatePayloadSummary(data.payloadSummary ?? '');
+  if (!summaryCheck.ok) throw new HttpsError('invalid-argument', summaryCheck.reason);
   // Recipient must hold a live grant for the recipient role in scope.
   const recipientGrants = await liveGrantsFor(recipientId);
   const recipientOk = recipientGrants.some(

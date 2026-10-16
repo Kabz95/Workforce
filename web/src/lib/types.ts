@@ -258,11 +258,36 @@ export interface Handoff {
   recipientId: string;
   recipientRole: AnyRole;
   purpose: string;
+  /** Routing label only — one of HANDOFF_PAYLOAD_SUMMARIES (F5). */
   payloadSummary: string;
   tenantId: string;
   status: 'draft' | 'offered' | 'accepted' | 'declined' | 'closed';
   createdAt: Timestamp;
   updatedAt: Timestamp;
+}
+
+/**
+ * Permitted handoff payloadSummary values (F5) — MIRROR of the
+ * Kernel's HANDOFF_PAYLOAD_SUMMARIES (functions/src/kernel.ts).
+ * The server (callable) and the rules enforce the same list; if you
+ * change the Kernel list, update this mirror, the rules, and the
+ * Handoffs form together. '' means no summary.
+ */
+export const HANDOFF_PAYLOAD_SUMMARIES: readonly string[] = [
+  '',
+  'first-contact navigation',
+  'intake received',
+  'ready for assignment',
+  'awaiting mentor match',
+  'supervision requested',
+  'certification next step',
+  'pathway review requested',
+  'follow-up requested',
+  'information only',
+];
+
+export function isValidHandoffPayloadSummary(value: unknown): value is string {
+  return typeof value === 'string' && (HANDOFF_PAYLOAD_SUMMARIES as readonly string[]).includes(value);
 }
 
 export interface Worker {
@@ -285,6 +310,17 @@ export interface FirstContactForm {
   createdAt: Timestamp;
 }
 
+/**
+ * Client patch for a first-contact form (F1). `sharedWith` is
+ * server-managed (grantAccess only), and `ownerId` / `tenantId` are
+ * immutable — the patch type excludes all three so a caller cannot
+ * even express the forbidden write. Rules enforce the same.
+ */
+export type FirstContactFormPatch = Omit<
+  Partial<FirstContactForm>,
+  'sharedWith' | 'ownerId' | 'tenantId'
+>;
+
 export interface PathwayStep {
   ownerId: string;
   tenantId: string;
@@ -294,6 +330,15 @@ export interface PathwayStep {
   sharedWith: string[];
   createdAt: Timestamp;
 }
+
+/**
+ * Client patch for a pathway step (F1). Same exclusion as
+ * FirstContactFormPatch: no `sharedWith`, `ownerId`, or `tenantId`.
+ */
+export type PathwayStepPatch = Omit<
+  Partial<PathwayStep>,
+  'sharedWith' | 'ownerId' | 'tenantId'
+>;
 
 export interface CertificationNavigation {
   ownerId: string;
@@ -412,6 +457,8 @@ export interface AccessEvent {
   action: string;
   resourceType: string;
   resourceId: string;
+  /** Hub the audited resource belongs to (F4 tidy — was missing from the type). */
+  tenantId: string;
   actingRole: string;
   actingGrantId: string | null;
   purpose: string;
