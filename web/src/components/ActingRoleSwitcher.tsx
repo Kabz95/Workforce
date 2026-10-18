@@ -64,12 +64,14 @@ export default function ActingRoleSwitcher() {
             <strong>Switch to {ROLE_LABELS[pending]}?</strong>
           </p>
           <p>{getManifest(pending).boundaryReminder}</p>
-          <button type="button" onClick={confirmSwitch}>
-            Yes, switch — I understand the boundary
-          </button>{' '}
-          <button type="button" onClick={() => setPending(null)}>
-            Cancel
-          </button>
+          <div className="row">
+            <button type="button" onClick={confirmSwitch}>
+              Yes, switch — I understand the boundary
+            </button>
+            <button type="button" className="secondary" onClick={() => setPending(null)}>
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>

@@ -37,6 +37,8 @@ const {
   transitionHandoff,
   validateGrantTransition,
   validateHandoffParties,
+  validatePayloadSummary,
+  HANDOFF_PAYLOAD_SUMMARIES,
 } = require('../lib/kernel.js');
 
 const TENANT = 'hub-1';
@@ -401,6 +403,29 @@ describe('handoff state machine + parties', () => {
   });
 });
 
+describe('handoff payloadSummary (F5: closed enum, no free text)', () => {
+  it('accepts empty and every routing label', () => {
+    for (const label of HANDOFF_PAYLOAD_SUMMARIES) {
+      assert.equal(validatePayloadSummary(label).ok, true, JSON.stringify(label));
+    }
+  });
+
+  it('rejects free-text story content, however short', () => {
+    assert.equal(
+      validatePayloadSummary('she told me she feels unsafe at home').ok,
+      false,
+    );
+    assert.equal(validatePayloadSummary('e2e handoff').ok, false);
+  });
+
+  it('rejects near-misses and non-strings', () => {
+    assert.equal(validatePayloadSummary('First-contact navigation').ok, false);
+    assert.equal(validatePayloadSummary(' follow-up requested').ok, false);
+    assert.equal(validatePayloadSummary(null).ok, false);
+    assert.equal(validatePayloadSummary(42).ok, false);
+  });
+});
+
 describe('idempotency keys', () => {
   it('accepts non-empty keys up to 128 chars', () => {
     assert.equal(isValidIdempotencyKey('123e4567-e89b-12d3-a456-426614174000'), true);
@@ -438,7 +463,7 @@ describe('legacy migration map', () => {
 });
 
 describe('access events', () => {
-  it('buildAccessEvent stamps acting role, grant, correlation, result', () => {
+  it('buildAccessEvent stamps acting role, grant, correlation, result, tenant', () => {
     const event = buildAccessEvent(
       {
         subjectId: 'user-1',
@@ -446,6 +471,7 @@ describe('access events', () => {
         action: 'grantAccess',
         resourceType: 'pathwaySteps',
         resourceId: 'step-1',
+        tenantId: 'hub-1',
         actingRole: 'worker',
         actingGrantId: 'grant-1',
         purpose: 'share a record',
@@ -459,6 +485,9 @@ describe('access events', () => {
     assert.equal(event.correlationId, 'corr-1');
     assert.equal(event.result, 'allowed');
     assert.equal(event.createdAt, '2026-10-13T00:00:00.000Z');
+    // F4: the tenant stamp is top-level so Privacy Lead oversight
+    // (listHubAccessEvents, where tenantId ==) can find the event.
+    assert.equal(event.tenantId, 'hub-1');
   });
 });
 

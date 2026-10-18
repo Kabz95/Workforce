@@ -323,6 +323,35 @@ describe('handoff flows (Phase 2)', () => {
       (e) => e.code === 'permission-denied',
     );
   });
+
+  it('F5: createHandoff rejects free-text payloadSummary (story content)', async () => {
+    const worker = await makeUser('worker');
+    const coord = await makeUser('hubCoordinator');
+    const nav = await makeUser('navigator');
+    await assert.rejects(
+      callFn('createHandoff', coord.token, {
+        workerId: worker.uid,
+        recipientId: nav.uid,
+        recipientRole: 'navigator',
+        purpose: 'handoff coordination',
+        payloadSummary: 'she told me she feels unsafe at home',
+        tenantId: HUB,
+        actingRole: 'hubCoordinator',
+      }),
+      (e) => e.code === 'invalid-argument' && /payloadSummary/.test(e.message),
+    );
+    // A routing label is accepted.
+    const created = await callFn('createHandoff', coord.token, {
+      workerId: worker.uid,
+      recipientId: nav.uid,
+      recipientRole: 'navigator',
+      purpose: 'handoff coordination',
+      payloadSummary: 'follow-up requested',
+      tenantId: HUB,
+      actingRole: 'hubCoordinator',
+    });
+    assert.equal(created.status, 'offered');
+  });
 });
 
 describe('createSupervisionSession (Phase 2 completion)', () => {
@@ -997,5 +1026,81 @@ describe('askSupportAgent (Phase 3, P3.1 — record-blind app support)', () => {
       callFn('askSupportAgent', worker.token, { question: 'x'.repeat(1001) }),
       (e) => e.code === 'invalid-argument',
     );
+  });
+});
+
+describe('access-event tenant stamping (F4)', () => {
+  const OTHER_HUB = 'hub-2';
+
+  it('grantAccess stamps the consent tenant on the audit event', async () => {
+    const worker = await makeUser('worker');
+    const nav = await makeUser('navigator');
+    const stepRef = await db.collection('pathwaySteps').add({
+      ownerId: worker.uid, tenantId: HUB, sharedWith: [],
+      type: 'navigation', title: 't', status: 'not-started',
+    });
+    const consentId = await seedConsent({
+      granterId: worker.uid, granteeId: nav.uid,
+      resourceType: 'pathwaySteps', resourceId: stepRef.id,
+    });
+    await callFn('grantAccess', worker.token, {
+      consentId, purpose: 'wayfinding support', actingRole: 'worker',
+    });
+    const events = await db.collection('accessEvents')
+      .where('subjectId', '==', worker.uid)
+      .where('action', '==', 'grantAccess')
+      .get();
+    assert.ok(events.size >= 1);
+    // Every matching event (this worker acts only in HUB here) carries
+    // the hub stamp top-level.
+    assert.ok(events.docs.every((d) => d.data().tenantId === HUB));
+  });
+
+  it('declareConflict stamps the conflict tenant on the audit event', async () => {
+    const worker = await makeUser('worker');
+    const result = await callFn('declareConflict', worker.token, {
+      description: 'test conflict', tenantId: HUB, purpose: 'declare a conflict',
+    });
+    assert.equal(result.ok, true);
+    const events = await db.collection('accessEvents')
+      .where('subjectId', '==', worker.uid)
+      .where('action', '==', 'declareConflict')
+      .get();
+    assert.ok(events.size >= 1);
+    assert.ok(events.docs.every((d) => d.data().tenantId === HUB));
+  });
+
+  it('a hub-A caller cannot cause an event stamped with hub-B tenantId', async () => {
+    // Coordinator holds a hub-1 (HUB) grant only. They attempt a handoff
+    // stamped hub-2 (OTHER_HUB): the scope gate must deny it before any
+    // audit event is written.
+    const coordA = await makeUser('hubCoordinator');
+    const workerB = await makeUser('worker', OTHER_HUB);
+    const navB = await makeUser('navigator', OTHER_HUB);
+    const idemKey = `f4-cross-${RUN}-${Math.random().toString(36).slice(2, 8)}`;
+    await assert.rejects(
+      callFn('createHandoff', coordA.token, {
+        workerId: workerB.uid,
+        recipientId: navB.uid,
+        recipientRole: 'navigator',
+        purpose: 'handoff coordination',
+        payloadSummary: 'first-contact navigation',
+        tenantId: OTHER_HUB,
+        actingRole: 'hubCoordinator',
+        idempotencyKey: idemKey,
+      }),
+      (e) => e.code === 'permission-denied' && /scope-mismatch/.test(e.message),
+    );
+    // No event from the denied attempt: the correlation key never appears.
+    const byCorr = await db.collection('accessEvents')
+      .where('correlationId', '==', idemKey)
+      .get();
+    assert.equal(byCorr.size, 0);
+    // And the hub-A actor caused no hub-B-stamped event at all.
+    const crossStamped = await db.collection('accessEvents')
+      .where('actorId', '==', coordA.uid)
+      .where('tenantId', '==', OTHER_HUB)
+      .get();
+    assert.equal(crossStamped.size, 0);
   });
 });

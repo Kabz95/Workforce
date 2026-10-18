@@ -111,7 +111,7 @@ export default function PrivacyLeadDashboard() {
   }, [complaints]);
 
   return (
-    <div data-testid="privacy-lead-dashboard">
+    <div className="dashboard" data-testid="privacy-lead-dashboard">
       <ErrorNotice error={error} />
       <section className="card">
         <h2>Attention queue</h2>

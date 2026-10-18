@@ -9,6 +9,7 @@ import {
 } from '../lib/queries';
 import {
   formatTimestamp,
+  HANDOFF_PAYLOAD_SUMMARIES,
   ROLE_LABELS,
   WORKER_PURPOSE_OPTIONS,
   type AnyRole,
@@ -204,8 +205,12 @@ export default function Handoffs() {
               </select>
             </div>
             <div className="field">
-              <label htmlFor="payloadSummary">Summary (routing metadata only — never the worker&apos;s story)</label>
-              <textarea id="payloadSummary" data-testid="handoff-summary" value={payloadSummary} onChange={(e) => setPayloadSummary(e.target.value)} />
+              <label htmlFor="payloadSummary">Summary (routing label only — never the worker&apos;s story)</label>
+              <select id="payloadSummary" data-testid="handoff-summary" value={payloadSummary} onChange={(e) => setPayloadSummary(e.target.value)}>
+                {HANDOFF_PAYLOAD_SUMMARIES.map((s) => (
+                  <option key={s} value={s}>{s === '' ? 'No summary' : s}</option>
+                ))}
+              </select>
             </div>
             <button type="submit" data-testid="handoff-offer-submit">Offer handoff</button>
           </form>

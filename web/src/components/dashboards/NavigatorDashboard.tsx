@@ -72,7 +72,7 @@ export default function NavigatorDashboard() {
   const liveReceived = received.filter((c) => !c.revokedAt && c.expiresAt.toDate() > new Date());
 
   return (
-    <div data-testid="navigator-dashboard">
+    <div className="dashboard" data-testid="navigator-dashboard">
       <ErrorNotice error={error} />
       <section className="card">
         <h2>Attention queue</h2>

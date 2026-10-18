@@ -975,6 +975,45 @@ export interface Handoff {
   updatedAt?: number;
 }
 
+/**
+ * The ONLY permitted payloadSummary values for a handoff (F5).
+ *
+ * A handoff carries routing metadata only — never the worker's story.
+ * Free text cannot be made safe: no length limit stops a pasted story,
+ * and no denylist reliably detects one. So the summary is a closed
+ * enum of routing labels, enforced in three places that must agree:
+ * kernel (callable), firestore.rules (direct client writes), and the
+ * frontend (select dropdown, no free-text field). '' means no summary.
+ * The worker's record itself travels only through a consent grant,
+ * never through the handoff.
+ */
+export const HANDOFF_PAYLOAD_SUMMARIES: readonly string[] = [
+  '',
+  'first-contact navigation',
+  'intake received',
+  'ready for assignment',
+  'awaiting mentor match',
+  'supervision requested',
+  'certification next step',
+  'pathway review requested',
+  'follow-up requested',
+  'information only',
+];
+
+export function validatePayloadSummary(summary: unknown): { ok: boolean; reason: string } {
+  if (typeof summary !== 'string') {
+    return { ok: false, reason: 'payloadSummary must be a string.' };
+  }
+  if (!(HANDOFF_PAYLOAD_SUMMARIES as readonly string[]).includes(summary)) {
+    return {
+      ok: false,
+      reason:
+        'payloadSummary must be one of the routing labels (or empty) — free text is not allowed, because a handoff must never carry the worker\'s story.',
+    };
+  }
+  return { ok: true, reason: 'ok' };
+}
+
 const HANDOFF_TRANSITIONS: Readonly<Record<HandoffStatus, readonly HandoffAction[]>> = {
   draft: ['offer', 'close'],
   offered: ['accept', 'decline', 'close'],
@@ -1030,6 +1069,14 @@ export interface AccessEventInput {
   action: string;
   resourceType: string;
   resourceId: string;
+  /**
+   * Tenant (hub) the audited resource belongs to. Stamped from the
+   * server-side resource/grant/job document — never from raw client
+   * input — so Privacy Lead oversight (`listHubAccessEvents`,
+   * `where tenantId ==`) sees exactly this hub's events. 'network'
+   * only for tenantless system/support events.
+   */
+  tenantId: string;
   actingRole: string;
   actingGrantId: string | null;
   purpose: string;

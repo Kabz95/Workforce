@@ -27,6 +27,7 @@ import type {
   DeletionRequest,
   Employer,
   FirstContactForm,
+  FirstContactFormPatch,
   GovernanceDecision,
   Handoff,
   Membership,
@@ -34,11 +35,16 @@ import type {
   Opportunity,
   OpportunityApplication,
   PathwayStep,
+  PathwayStepPatch,
   ReadinessAssessment,
   RoleGrant,
   SupervisionSession,
   WithId,
   Worker,
+} from './types';
+import {
+  HANDOFF_PAYLOAD_SUMMARIES,
+  isValidHandoffPayloadSummary,
 } from './types';
 
 /**
@@ -149,7 +155,7 @@ export async function createForm(
   return ref.id;
 }
 
-export async function updateForm(id: string, patch: Partial<FirstContactForm>): Promise<void> {
+export async function updateForm(id: string, patch: FirstContactFormPatch): Promise<void> {
   await updateDoc(doc(db, 'firstContactForms', id), patch);
 }
 
@@ -184,7 +190,7 @@ export async function addPathwayStep(
   return ref.id;
 }
 
-export async function updatePathwayStep(id: string, patch: Partial<PathwayStep>): Promise<void> {
+export async function updatePathwayStep(id: string, patch: PathwayStepPatch): Promise<void> {
   await updateDoc(doc(db, 'pathwaySteps', id), patch);
 }
 
@@ -287,8 +293,19 @@ export async function grantConsent(
     purpose: data.purpose,
   });
   // Activate sharing through the grantAccess Function — the ONLY path
-  // that touches sharedWith. If activation fails, roll back the grant
-  // record so no dead grant lingers.
+  // that touches sharedWith. If activation fails, roll the grant back
+  // by REVOKING it (F2). The previous code called deleteDoc here, but
+  // the rules deny consents delete unconditionally (`allow delete:
+  // if false`), so the rollback itself threw — masking the original
+  // error and leaving an orphaned consent with revokedAt == null,
+  // which the Consents page classifies as "live" even though
+  // sharedWith was never granted. Revocation is the rollback the
+  // rules actually allow (granter, revokedAt only, null -> timestamp),
+  // and the onConsentRevoke trigger then strips sharedWith (a no-op
+  // here, since activation failed) and writes the audit event — so
+  // no orphaned "live" consent can remain. No backend change is
+  // needed: the server-side trigger already closes the orphan once
+  // revokedAt is set.
   try {
     await grantAccess({
       consentId: ref.id,
@@ -298,7 +315,19 @@ export async function grantConsent(
       idempotencyKey: newIdempotencyKey(),
     });
   } catch (err) {
-    await deleteDoc(ref);
+    try {
+      await updateDoc(ref, { revokedAt: serverTimestamp() });
+    } catch (rollbackErr) {
+      // Rollback itself failed: the consent may still read as "live".
+      // Surface its id explicitly so the granter can revoke it by hand
+      // from Consents instead of silently believing sharing failed.
+      throw new Error(
+        `Sharing failed and the automatic rollback also failed. ` +
+          `Revoke consent ${ref.id} manually in Consents to make sure it does not stay live. ` +
+          `Original error: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Rollback error: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+      );
+    }
     throw err;
   }
   return ref.id;
@@ -456,6 +485,14 @@ export async function createHandoff(
   },
   acting?: ActingInput,
 ): Promise<void> {
+  // F5 (client-side mirror of the server enum): reject free-text
+  // summaries before the call — the callable and the rules enforce
+  // the same list, so this is defense in depth, not the control.
+  if (data.payloadSummary !== undefined && !isValidHandoffPayloadSummary(data.payloadSummary)) {
+    throw new Error(
+      `payloadSummary must be one of the routing labels (${HANDOFF_PAYLOAD_SUMMARIES.map((s) => s || '(none)').join(', ')}) — free text is not allowed, because a handoff must never carry the worker's story.`,
+    );
+  }
   await createHandoffFn({
     ...data,
     actingGrantId: acting?.actingGrantId ?? null,

@@ -81,7 +81,7 @@ export default function SupervisorDashboard() {
   );
 
   return (
-    <div data-testid="supervisor-dashboard">
+    <div className="dashboard" data-testid="supervisor-dashboard">
       <ErrorNotice error={error} />
       <section className="card">
         <h2>Attention queue</h2>

@@ -313,6 +313,14 @@ describe('consent rules', () => {
     // Re-revoke (a new timestamp over an existing one) denied.
     await assert.rejects(db.doc('consents/consent-1').update({ revokedAt: new Date() }));
   });
+
+  it('F2: consent delete is denied even for the granter — revocation is the only rollback', async () => {
+    // The old grantConsent rollback called deleteDoc here; it could
+    // never succeed, so a failed activation left an orphaned "live"
+    // consent. Revocation (above) is the rollback the rules allow.
+    const db = worker1().firestore();
+    await assert.rejects(db.doc('consents/consent-1').delete());
+  });
 });
 
 describe('role grants + access events reads', () => {
@@ -353,6 +361,26 @@ describe('handoffs + conflicts', () => {
         payloadSummary: '', tenantId: HUB, status: 'offered',
       }),
     );
+  });
+
+  it('F5: handoff create with free-text payloadSummary is denied (direct-write bypass closed)', async () => {
+    // A direct client write bypasses the createHandoff callable, so
+    // the rules must enforce the routing-label enum themselves.
+    const db = coordinator().firestore();
+    await assert.rejects(
+      db.collection('handoffs').add({
+        workerId: 'worker-1', senderId: 'coord-1', senderRole: 'hubCoordinator',
+        recipientId: 'worker-2', recipientRole: 'mentor', purpose: 'handoff coordination',
+        payloadSummary: 'she told me she feels unsafe at home', tenantId: HUB, status: 'offered',
+      }),
+    );
+    // A routing label is still accepted.
+    const ref = await db.collection('handoffs').add({
+      workerId: 'worker-1', senderId: 'coord-1', senderRole: 'hubCoordinator',
+      recipientId: 'worker-2', recipientRole: 'mentor', purpose: 'handoff coordination',
+      payloadSummary: 'follow-up requested', tenantId: HUB, status: 'offered',
+    });
+    assert.ok(ref.id);
   });
 
   it('recipient may change only the status; worker may read their handoff', async () => {
