@@ -463,6 +463,37 @@ export function mayAuthorizeGrant(
   return authorityTenantId === targetTenantId;
 }
 
+/**
+ * Roles that may open the membership & grants view (read-only):
+ * the four grant authorities plus the privacy lead, whose charter is
+ * review of "access events and grants". Note steeringCircle IS a
+ * grant authority in the kernel but is NOT in the Firestore rules'
+ * canAuthorise() list helper — which is exactly why this view is
+ * served by the listScopeGrants callable (server-verified live
+ * grant) instead of a client-side rules read.
+ */
+export const MEMBERSHIP_VIEW_ROLES: readonly AnyRole[] = [
+  'hubCoordinator',
+  'steeringCircle',
+  'council',
+  'backboneLead',
+  'privacyLead',
+];
+
+/**
+ * The listing scope of the membership view for an acting role:
+ * network roles (council, backboneLead) see grants across hubs;
+ * hub roles (hubCoordinator, steeringCircle, privacyLead) see only
+ * their own tenant's grants. Null = the role has no membership view.
+ */
+export function membershipViewScope(role: AnyRole): 'hub' | 'network' | null {
+  if (role === 'council' || role === 'backboneLead') return 'network';
+  if (role === 'hubCoordinator' || role === 'steeringCircle' || role === 'privacyLead') {
+    return 'hub';
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Purpose taxonomy (Phase 2)
 // ---------------------------------------------------------------------------
@@ -504,6 +535,7 @@ export const PURPOSE_TAXONOMY: readonly string[] = [
   'person record setup',
   'invite a member',
   'claim an invitation',
+  'membership oversight',
   // Support agent (Phase 3, P3.1/P3.2): record-blind, actionless.
   'app support',
   'publish support brief',
@@ -542,6 +574,7 @@ export type CommandName =
   | 'ensureMyPerson'
   | 'inviteMember'
   | 'getMyGrants'
+  | 'listScopeGrants'
   | 'createSupervisionSession'
   | 'createMentorship'
   | 'askSupport';
@@ -638,6 +671,11 @@ export const COMMAND_MATRIX: Readonly<Record<CommandName, CommandMatrixEntry>> =
     roles: 'any',
     highRisk: false,
     note: 'Own grants only.',
+  },
+  listScopeGrants: {
+    roles: MEMBERSHIP_VIEW_ROLES,
+    highRisk: false,
+    note: 'Read-only membership & grants view. The handler requires a LIVE grant document for one of these roles (never claims alone — the view exposes grantee emails), computes the listing scope from the acting role (hub roles: own tenant; council/backboneLead: network-wide), returns grant metadata only (never record content), and writes an access event. No mutation path exists on this command.',
   },
   createSupervisionSession: {
     roles: ['worker'],

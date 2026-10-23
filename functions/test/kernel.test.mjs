@@ -31,6 +31,8 @@ const {
   isValidIdempotencyKey,
   isValidPurpose,
   mayAuthorizeGrant,
+  MEMBERSHIP_VIEW_ROLES,
+  membershipViewScope,
   migrateLegacyRole,
   PURPOSE_TAXONOMY,
   selectDefaultGrant,
@@ -596,11 +598,52 @@ describe('central role → command matrix (Phase 2)', () => {
       'createHandoff', 'respondHandoff', 'closeHandoff',
       'createRoleGrant', 'resolveRoleGrant', 'revokeRoleGrant',
       'requestRoleGrant', 'declareConflict', 'ensureMyPerson', 'getMyGrants',
-      'inviteMember',
+      'inviteMember', 'listScopeGrants',
     ]) {
       assert.ok(COMMAND_MATRIX[cmd], cmd);
       assert.equal(typeof COMMAND_MATRIX[cmd].highRisk, 'boolean', cmd);
     }
+  });
+});
+
+describe('membership view — listScopeGrants (role information surfaces)', () => {
+  it('MEMBERSHIP_VIEW_ROLES is exactly the four grant authorities + privacyLead', () => {
+    assert.deepEqual(
+      [...MEMBERSHIP_VIEW_ROLES],
+      ['hubCoordinator', 'steeringCircle', 'council', 'backboneLead', 'privacyLead'],
+    );
+    assert.deepEqual([...COMMAND_MATRIX.listScopeGrants.roles], [...MEMBERSHIP_VIEW_ROLES]);
+    assert.equal(COMMAND_MATRIX.listScopeGrants.highRisk, false);
+  });
+
+  it('commandAllowsRole gates listScopeGrants to the membership-view roles', () => {
+    for (const role of MEMBERSHIP_VIEW_ROLES) {
+      assert.equal(commandAllowsRole('listScopeGrants', role), true, role);
+    }
+    for (const role of [
+      'worker', 'mentor', 'supervisor', 'navigator', 'facilitator',
+      'analyst', 'researcher', 'employer', 'systemAdmin',
+    ]) {
+      assert.equal(commandAllowsRole('listScopeGrants', role), false, role);
+    }
+  });
+
+  it('membershipViewScope: network roles cross-hub, hub roles own tenant, others none', () => {
+    assert.equal(membershipViewScope('council'), 'network');
+    assert.equal(membershipViewScope('backboneLead'), 'network');
+    assert.equal(membershipViewScope('hubCoordinator'), 'hub');
+    assert.equal(membershipViewScope('steeringCircle'), 'hub');
+    assert.equal(membershipViewScope('privacyLead'), 'hub');
+    for (const role of [
+      'worker', 'mentor', 'supervisor', 'navigator', 'facilitator',
+      'analyst', 'researcher', 'employer', 'systemAdmin',
+    ]) {
+      assert.equal(membershipViewScope(role), null, role);
+    }
+  });
+
+  it("'membership oversight' is a taxonomy purpose", () => {
+    assert.equal(isValidPurpose('membership oversight'), true);
   });
 });
 

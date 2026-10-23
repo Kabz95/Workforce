@@ -1104,3 +1104,83 @@ describe('access-event tenant stamping (F4)', () => {
     assert.equal(crossStamped.size, 0);
   });
 });
+
+describe('listScopeGrants (membership & grants view — read-only)', () => {
+  const OTHER_HUB = 'hub-2';
+
+  it('hubCoordinator lists only own-tenant grants (hub scope)', async () => {
+    const coord = await makeUser('hubCoordinator');
+    const worker = await makeUser('worker');
+    const otherWorker = await makeUser('worker', OTHER_HUB);
+    const result = await callFn('listScopeGrants', coord.token, {
+      actingRole: 'hubCoordinator',
+      purpose: 'membership oversight',
+    });
+    assert.equal(result.scope, 'hub');
+    assert.equal(result.tenantId, HUB);
+    const ids = result.grants.map((g) => g.granteeId);
+    assert.ok(ids.includes(worker.uid), 'own-tenant grant listed');
+    assert.ok(!ids.includes(otherWorker.uid), 'other-tenant grant NOT listed');
+    // Read-only: the call writes an audit event for the view itself.
+    const events = await db.collection('accessEvents')
+      .where('actorId', '==', coord.uid)
+      .where('action', '==', 'listScopeGrants')
+      .get();
+    assert.ok(events.size >= 1, 'view is audited');
+  });
+
+  it('council lists cross-hub (network scope)', async () => {
+    const council = await makeUser('council');
+    const otherWorker = await makeUser('worker', OTHER_HUB);
+    const result = await callFn('listScopeGrants', council.token, {
+      actingRole: 'council',
+      purpose: 'membership oversight',
+    });
+    assert.equal(result.scope, 'network');
+    assert.equal(result.tenantId, null);
+    const ids = result.grants.map((g) => g.granteeId);
+    assert.ok(ids.includes(otherWorker.uid), 'cross-hub grant listed for council');
+  });
+
+  it('steeringCircle gets the hub view even though rules cannot serve it', async () => {
+    const steering = await makeUser('steeringCircle');
+    const result = await callFn('listScopeGrants', steering.token, {
+      actingRole: 'steeringCircle',
+      purpose: 'membership oversight',
+    });
+    assert.equal(result.scope, 'hub');
+    assert.ok(Array.isArray(result.grants));
+  });
+
+  it('worker is denied: no membership view without an oversight grant', async () => {
+    const worker = await makeUser('worker');
+    await assert.rejects(
+      callFn('listScopeGrants', worker.token, {
+        actingRole: 'worker',
+        purpose: 'membership oversight',
+      }),
+      (e) => e.code === 'permission-denied',
+    );
+  });
+
+  it('unauthenticated calls are rejected', async () => {
+    const res = await fetch(fnUrl('listScopeGrants'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data: { actingRole: 'council' } }),
+    });
+    const body = await res.json();
+    assert.ok(body.error, 'expected an error body');
+  });
+
+  it('a non-taxonomy purpose is rejected', async () => {
+    const coord = await makeUser('hubCoordinator');
+    await assert.rejects(
+      callFn('listScopeGrants', coord.token, {
+        actingRole: 'hubCoordinator',
+        purpose: 'snooping around',
+      }),
+      (e) => e.code === 'invalid-argument',
+    );
+  });
+});

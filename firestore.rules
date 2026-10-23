@@ -485,14 +485,17 @@ service cloud.firestore {
       allow delete: if signedIn() && isOwner(resource.data) && storedTenantMatches(resource.data);
     }
 
-    // ---- Aggregates (server-written; governance + analyst read) ----
+    // ---- Aggregates (server-written; governance + analyst + researcher read) ----
     // Published by design: national roles (analyst, council,
-    // backboneLead) read cross-hub; hub roles stay tenant-scoped.
+    // backboneLead, researcher) read cross-hub; hub roles stay
+    // tenant-scoped. Researcher reads the same suppressed aggregates
+    // as the analyst — de-identified data only; the role still has
+    // NO read on any worker record (owner-only blocks above).
     // Cells < 5 are suppressed server-side before any aggregate is
     // written, so cross-hub reads cannot re-identify individuals.
     match /aggregates/{aggregateId} {
       allow get, list: if signedIn()
-        && (hasAnyRole(['analyst', 'council', 'backboneLead'])
+        && (hasAnyRole(['analyst', 'council', 'backboneLead', 'researcher'])
           || (storedTenantMatches(resource.data)
             && hasAnyRole(['steeringCircle', 'hubCoordinator', 'privacyLead'])));
       allow create, update, delete: if false;
@@ -501,7 +504,7 @@ service cloud.firestore {
     // ---- Aggregate releases (server-written) ----
     match /aggregateReleases/{releaseId} {
       allow get, list: if signedIn()
-        && (hasAnyRole(['analyst', 'council', 'backboneLead'])
+        && (hasAnyRole(['analyst', 'council', 'backboneLead', 'researcher'])
           || (storedTenantMatches(resource.data)
             && hasAnyRole(['steeringCircle', 'hubCoordinator', 'privacyLead'])));
       allow create, update, delete: if false;

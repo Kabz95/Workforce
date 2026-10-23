@@ -62,6 +62,7 @@ import {
 export {
   authorizeCommandFn as authorizeCommand,
   getMyGrantsFn as getMyGrants,
+  listScopeGrantsFn as listScopeGrants,
   requestRoleGrantFn as requestRoleGrant,
   createRoleGrantFn as createRoleGrant,
   resolveRoleGrantFn as resolveRoleGrant,

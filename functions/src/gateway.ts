@@ -35,6 +35,7 @@ import {
   isGrantLive,
   isValidPurpose,
   mayAuthorizeGrant,
+  membershipViewScope,
   selectDefaultGrant,
   transitionHandoff,
   validateGrantTransition,
@@ -296,6 +297,87 @@ export const getMyGrantsFn = onCall(async (request) => {
       live: isGrantLive(g, now),
     })),
     defaultGrantId: selectDefaultGrant(grants, now)?.id ?? null,
+  };
+});
+
+// ---------------------------------------------------------------------------
+// listScopeGrants — read-only membership & grants view.
+//
+// Why a callable and not a client-side rules read: the Firestore
+// rules pin every authoriser list read to the caller's CLAIM tenant
+// (the cross-tenant-leak invariant) and steeringCircle is not in the
+// rules' canAuthorise() helper at all — so the view the matrix
+// promises (hub roles: own tenant; council/backboneLead: network-
+// wide; steeringCircle included) cannot be served lawfully by rules
+// without widening them. The server verifies the caller's LIVE grant
+// document instead: claims alone never suffice, because the view
+// exposes grantee emails (personal data). Read-only: no mutation
+// path exists here; grant administration stays on its own commands.
+// ---------------------------------------------------------------------------
+
+export const listScopeGrantsFn = onCall(async (request) => {
+  const caller = callerFrom(request);
+  const data = (request.data ?? {}) as {
+    actingGrantId?: string | null;
+    actingRole?: string | null;
+    purpose?: string;
+  };
+  const purpose = validatePurpose(data.purpose, 'membership oversight');
+  const actingGrant = await resolveActingGrant(
+    caller,
+    data.actingGrantId ?? null,
+    data.actingRole ?? null,
+  );
+  if (!actingGrant) {
+    throw new HttpsError(
+      'permission-denied',
+      'A live role grant is required for the membership view.',
+    );
+  }
+  if (!commandAllowsRole('listScopeGrants', actingGrant.role)) {
+    throw new HttpsError(
+      'permission-denied',
+      `The ${actingGrant.role} capacity does not include the membership view.`,
+    );
+  }
+  const scope = membershipViewScope(actingGrant.role);
+  if (!scope) {
+    throw new HttpsError(
+      'permission-denied',
+      `The ${actingGrant.role} capacity has no membership-view scope.`,
+    );
+  }
+  const snap =
+    scope === 'network'
+      ? await db.collection(GRANTS).get()
+      : await db.collection(GRANTS).where('tenantId', '==', actingGrant.tenantId).get();
+  const grants = snap.docs.map(grantFromDoc);
+  // Audit the view itself: grant metadata is oversight data, and the
+  // privacy charter is that reviews are recorded. Server-authored,
+  // like every access event.
+  await db.collection(ACCESS_EVENTS).add(
+    buildAccessEvent(
+      {
+        subjectId: caller.uid,
+        actorId: caller.uid,
+        action: 'listScopeGrants',
+        resourceType: 'roleGrants',
+        resourceId: scope === 'network' ? 'network' : actingGrant.tenantId,
+        tenantId: actingGrant.tenantId,
+        actingRole: actingGrant.role,
+        actingGrantId: actingGrant.id ?? null,
+        purpose,
+        correlationId: `listScopeGrants:${caller.uid}:${Date.now()}`,
+        result: 'allowed',
+        detail: { scope, count: grants.length },
+      },
+      FieldValue.serverTimestamp(),
+    ),
+  );
+  return {
+    scope,
+    tenantId: scope === 'hub' ? actingGrant.tenantId : null,
+    grants,
   };
 });
 

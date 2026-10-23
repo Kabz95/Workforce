@@ -27,7 +27,7 @@
  *   senderRole must be a role the sender holds)
  * - cross-tenant list leak (authoriser disjuncts are tenant-pinned)
  * - tenant creation restricted to council / backboneLead
- * - national aggregate reads (analyst/council/backboneLead cross-hub;
+ * - national aggregate reads (analyst/council/backboneLead/researcher cross-hub;
  *   hub roles tenant-scoped); consent revocation is one-way
  * - no cross-role leakage (employer cannot read worker records;
  *   analyst cannot read raw evaluation submissions)
@@ -58,6 +58,7 @@ const workerOtherHub = () => ctx('worker-9', { roles: ['worker'], tenantId: OTHE
 const coordinator = () => ctx('coord-1', { roles: ['hubCoordinator'], tenantId: HUB });
 const privacyLead = () => ctx('privacy-1', { roles: ['privacyLead'], tenantId: HUB });
 const analyst = () => ctx('analyst-1', { roles: ['analyst'], tenantId: HUB });
+const researcher = () => ctx('researcher-1', { roles: ['researcher'], tenantId: HUB });
 const employer = () => ctx('employer-1', { roles: ['employer'], tenantId: HUB });
 const steering = () => ctx('steer-1', { roles: ['steeringCircle'], tenantId: HUB });
 const council = () => ctx('council-1', { roles: ['council'], tenantId: HUB });
@@ -593,6 +594,41 @@ describe('national aggregate reads (B4)', () => {
     await assert.rejects(coordinator().firestore().doc('aggregates/agg-other').get());
     const own = await coordinator().firestore().doc('aggregates/agg-hub').get();
     assert.equal(own.exists, true);
+  });
+
+  it('researcher CAN read cross-hub aggregates and releases (suppressed data only)', async () => {
+    await seedAggregates();
+    const agg = await researcher().firestore().doc('aggregates/agg-other').get();
+    assert.equal(agg.exists, true);
+    const rel = await researcher().firestore().doc('aggregateReleases/release-other').get();
+    assert.equal(rel.exists, true);
+    const list = await researcher().firestore().collection('aggregates').get();
+    assert.ok(list.docs.length >= 2);
+  });
+
+  it('researcher still CANNOT read any worker record or raw submission', async () => {
+    await assert.rejects(researcher().firestore().doc('workers/worker-1').get());
+    await assert.rejects(researcher().firestore().collection('workers').get());
+    await assert.rejects(researcher().firestore().doc('evaluationSubmissions/sub-1').get());
+    await assert.rejects(researcher().firestore().doc('firstContactForms/form-1').get());
+  });
+
+  it('researcher CANNOT write aggregates or releases', async () => {
+    await assert.rejects(
+      researcher().firestore().doc('aggregates/agg-new').set({
+        tenantId: HUB, metric: 'm', period: 'p', value: 9, breakdown: {},
+      }),
+    );
+    await assert.rejects(
+      researcher().firestore().collection('aggregates').add({
+        tenantId: HUB, metric: 'm', period: 'p', value: 9, breakdown: {},
+      }),
+    );
+    await assert.rejects(
+      researcher().firestore().doc('aggregateReleases/rel-new').set({
+        tenantId: HUB, metric: 'evaluation', period: 'p', published: 1, suppressed: 0,
+      }),
+    );
   });
 });
 
