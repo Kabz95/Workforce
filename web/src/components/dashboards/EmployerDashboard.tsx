@@ -47,10 +47,20 @@ export default function EmployerDashboard() {
         const emp = await getMyEmployer(user.uid, tenantId);
         if (cancelled || controller.signal.aborted) return;
         setEmployer(emp);
+        // Employer-owned reads (readiness assessments, opportunity
+        // applications) are keyed by the owner's USER UID in
+        // firestore.rules: readiness create/list and application
+        // get/list/update all require employerId == uid(). The
+        // /readiness and /opportunities pages pass the employer
+        // document id instead, which those rules can never
+        // satisfy — a pre-existing defect in the shipped employer
+        // flows, flagged in the build report and not fixed here
+        // (this dashboard is read-only). These widgets follow the
+        // enforceable uid convention.
         const results = await Promise.allSettled([
-          emp ? listMyReadiness(emp.id, tenantId) : Promise.resolve([]),
+          listMyReadiness(user.uid, tenantId),
           listOpportunities(tenantId),
-          emp ? listApplicationsForEmployer(emp.id, tenantId) : Promise.resolve([]),
+          listApplicationsForEmployer(user.uid, tenantId),
         ]);
         if (cancelled || controller.signal.aborted) return;
         const [r, o, a] = results.map((x) => (x.status === 'fulfilled' ? x.value : []));
