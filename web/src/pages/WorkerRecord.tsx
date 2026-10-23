@@ -8,6 +8,7 @@ import {
   getDeletionRequest,
   getMyWorker,
   listMyForms,
+  listSharedFirstContactForms,
   processDeletion,
   requestMyDeletion,
   requestMyExport,
@@ -21,6 +22,7 @@ export default function WorkerRecord() {
   const { user, tenantId, actingRole, actingGrant } = useAuth();
   const [worker, setWorker] = useState<WithId<Worker> | null>(null);
   const [forms, setForms] = useState<WithId<FirstContactForm>[]>([]);
+  const [sharedForms, setSharedForms] = useState<WithId<FirstContactForm>[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [notice, setNotice] = useState('');
   const [displayName, setDisplayName] = useState('');
@@ -53,6 +55,26 @@ export default function WorkerRecord() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, tenantId]);
+
+  // Shared-with-me (navigator / supervisor / mentor acting capacities):
+  // the SAME query their dashboards use — forms a worker consented to
+  // share with the caller (sharedWith), nothing else. The worker's own
+  // view of this page is unchanged.
+  const showShared = actingRole === 'navigator' || actingRole === 'supervisor' || actingRole === 'mentor';
+  useEffect(() => {
+    if (!user || !showShared) return;
+    let cancelled = false;
+    void listSharedFirstContactForms(user.uid, tenantId)
+      .then((f) => {
+        if (!cancelled) setSharedForms(f);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, tenantId, showShared]);
 
   const saveWorker = async (e: FormEvent) => {
     e.preventDefault();
@@ -213,6 +235,30 @@ export default function WorkerRecord() {
       </p>
       <ErrorNotice error={error} />
       {notice && <div className="notice success" data-testid="notice">{notice}</div>}
+
+      {showShared && (
+        <section className="card" data-testid="shared-with-me">
+          <h2>Shared with me</h2>
+          <p className="muted">
+            First-contact forms workers consented to share with you. This is
+            separate from your own record below — nothing here is yours, and
+            nothing unshared is visible.
+          </p>
+          {sharedForms.length === 0 ? (
+            <p className="muted">No forms shared with you yet.</p>
+          ) : (
+            <ul>
+              {sharedForms.map((f) => (
+                <li key={f.id}>
+                  <strong>{f.contactName}</strong> via {f.contactMethod} · needs: {f.needs || '—'}
+                  <br />
+                  <span className="muted">From worker {f.ownerId} · {formatTimestamp(f.createdAt)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+      )}
 
       <section className="card">
         <h2>Worker profile</h2>

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { listAggregates } from '../lib/queries';
+import { listAggregates, listGovernanceDecisions } from '../lib/queries';
 import {
   ROLE_LABELS,
+  formatTimestamp,
   type WithId,
   type Aggregate,
+  type GovernanceDecision,
 } from '../lib/types';
 import { getManifest } from '../lib/manifests';
 import { registerAbortController } from '../lib/roleState';
@@ -16,6 +18,16 @@ import HubCoordinatorDashboard from '../components/dashboards/HubCoordinatorDash
 import SupervisorDashboard from '../components/dashboards/SupervisorDashboard';
 import MentorDashboard from '../components/dashboards/MentorDashboard';
 import PrivacyLeadDashboard from '../components/dashboards/PrivacyLeadDashboard';
+import FacilitatorDashboard from '../components/dashboards/FacilitatorDashboard';
+import EmployerDashboard from '../components/dashboards/EmployerDashboard';
+
+/** Roles whose dashboard shows the aggregates widget (matches the
+ *  /aggregates read rules: national roles cross-hub, steering hub). */
+const AGGREGATE_WIDGET_ROLES = ['analyst', 'steeringCircle', 'council', 'backboneLead', 'researcher'];
+/** Governance roles whose dashboard shows the published-decisions widget. */
+const DECISION_WIDGET_ROLES = ['steeringCircle', 'council', 'backboneLead'];
+/** Roles with the membership & grants view (kernel MEMBERSHIP_VIEW_ROLES). */
+const MEMBERSHIP_LINK_ROLES = ['hubCoordinator', 'steeringCircle', 'council', 'backboneLead', 'privacyLead'];
 
 /**
  * Manifest-driven dashboard (Phase 2).
@@ -24,26 +36,48 @@ import PrivacyLeadDashboard from '../components/dashboards/PrivacyLeadDashboard'
  * purpose, and the explicit boundaries (what this role never sees).
  * The role-specific dashboard components below supply the real work
  * surfaces — Worker, Navigator, Hub Coordinator, Supervisor, Mentor,
- * and Privacy Lead are wired to live data; the other roles render the
- * manifest fallback (aggregates for analyst / steering / council,
- * links for the rest) until their dashboards land in later phases.
+ * Privacy Lead, Facilitator, and Employer are wired to live data; the
+ * remaining governance/intelligence roles render the manifest shell
+ * plus real widgets (aggregates for analyst / steering / council /
+ * backboneLead / researcher, published decisions for the governance
+ * roles) fed by the same reads their pages use.
  */
 export default function Dashboard() {
   const { user, actingRole, tenantId } = useAuth();
   const [aggregates, setAggregates] = useState<WithId<Aggregate>[]>([]);
+  const [decisions, setDecisions] = useState<WithId<GovernanceDecision>[]>([]);
   const [error, setError] = useState<unknown>(null);
 
   const manifest = actingRole ? getManifest(actingRole) : null;
 
   useEffect(() => {
     if (!user || !actingRole) return;
-    if (!['analyst', 'steeringCircle', 'council'].includes(actingRole)) return;
+    if (!AGGREGATE_WIDGET_ROLES.includes(actingRole)) return;
     const controller = new AbortController();
     const unregister = registerAbortController(controller);
     let cancelled = false;
     void listAggregates(tenantId)
       .then((a) => {
         if (!cancelled && !controller.signal.aborted) setAggregates(a);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err);
+      });
+    return () => {
+      cancelled = true;
+      unregister();
+    };
+  }, [user, tenantId, actingRole]);
+
+  useEffect(() => {
+    if (!user || !actingRole) return;
+    if (!DECISION_WIDGET_ROLES.includes(actingRole)) return;
+    const controller = new AbortController();
+    const unregister = registerAbortController(controller);
+    let cancelled = false;
+    void listGovernanceDecisions(tenantId)
+      .then((d) => {
+        if (!cancelled && !controller.signal.aborted) setDecisions(d);
       })
       .catch((err) => {
         if (!cancelled) setError(err);
@@ -91,13 +125,17 @@ export default function Dashboard() {
       {actingRole === 'supervisor' && <SupervisorDashboard />}
       {actingRole === 'mentor' && <MentorDashboard />}
       {actingRole === 'privacyLead' && <PrivacyLeadDashboard />}
+      {actingRole === 'facilitator' && <FacilitatorDashboard />}
+      {actingRole === 'employer' && <EmployerDashboard />}
 
       {actingRole !== 'worker' &&
         actingRole !== 'navigator' &&
         actingRole !== 'hubCoordinator' &&
         actingRole !== 'supervisor' &&
         actingRole !== 'mentor' &&
-        actingRole !== 'privacyLead' && (
+        actingRole !== 'privacyLead' &&
+        actingRole !== 'facilitator' &&
+        actingRole !== 'employer' && (
         <>
           <section className="card">
             <h2>Attention queue</h2>
@@ -106,13 +144,7 @@ export default function Dashboard() {
           <section className="card">
             <h2>Core work</h2>
             <p className="muted">{manifest.zones.coreWork}</p>
-            {actingRole === 'employer' && (
-              <p>
-                <Link to="/readiness">Employer readiness self-assessment →</Link>{' '}
-                <Link to="/opportunities">Postings and applications →</Link>
-              </p>
-            )}
-            {['analyst', 'steeringCircle', 'council'].includes(actingRole) && (
+            {AGGREGATE_WIDGET_ROLES.includes(actingRole) && (
               <>
                 {aggregates.length === 0 ? (
                   <p className="muted">No aggregates published yet for this hub.</p>
@@ -135,7 +167,30 @@ export default function Dashboard() {
                 <p><Link to="/aggregates">All aggregates →</Link></p>
               </>
             )}
+            {MEMBERSHIP_LINK_ROLES.includes(actingRole) && (
+              <p><Link to="/membership">Membership &amp; grants →</Link></p>
+            )}
           </section>
+          {DECISION_WIDGET_ROLES.includes(actingRole) && (
+            <section className="card">
+              <h2>Published decisions</h2>
+              {decisions.length === 0 ? (
+                <p className="muted">No governance decisions published for this hub yet.</p>
+              ) : (
+                <ul>
+                  {[...decisions]
+                    .sort((a, b) => (b.decidedAt?.toMillis?.() ?? 0) - (a.decidedAt?.toMillis?.() ?? 0))
+                    .slice(0, 5)
+                    .map((d) => (
+                      <li key={d.id}>
+                        <strong>{d.title}</strong> · {formatTimestamp(d.decidedAt)}
+                      </li>
+                    ))}
+                </ul>
+              )}
+              <p><Link to="/governance">Governance →</Link></p>
+            </section>
+          )}
           <section className="card">
             <h2>Handoffs</h2>
             <p className="muted">{manifest.zones.handoffs}</p>

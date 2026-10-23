@@ -76,6 +76,7 @@ export const PURPOSE_TAXONOMY: readonly string[] = [
   'person record setup',
   'invite a member',
   'claim an invitation',
+  'membership oversight',
 ];
 
 /**
@@ -212,7 +213,7 @@ export interface RoleGrant {
   tenantId: string;
   basis: string;
   grantedBy: string;
-  status: 'proposed' | 'active' | 'suspended' | 'expired' | 'revoked';
+  status: 'pending' | 'proposed' | 'active' | 'suspended' | 'expired' | 'revoked';
   validFrom: TimestampOrMs;
   validUntil: TimestampOrMs;
   needsReview?: boolean;
@@ -431,6 +432,22 @@ export interface Aggregate {
   period: string;
   value: number;
   breakdown: Record<string, number>;
+}
+
+/**
+ * Server-written aggregate release record (aggregateEvaluation):
+ * what was published, what was suppressed at the MIN_CELL floor,
+ * and when. Read-only everywhere; clients can never write these.
+ */
+export interface AggregateRelease {
+  tenantId: string;
+  metric: string;
+  period: string;
+  published: number;
+  suppressed: number;
+  minCell: number;
+  reviewedBy: string | null;
+  releasedAt: Timestamp;
 }
 
 export interface Consent {

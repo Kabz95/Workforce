@@ -128,7 +128,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'mentor',
     'Mentor',
     'Walks alongside a peer worker. Holds the relationship, not the record.',
-    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
+    ['/', '/record', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Worker records without a live consent grant',
       'Supervision observations',
@@ -149,7 +149,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'supervisor',
     'Peer-Practice Supervisor',
     'Holds the practice: reflective supervision for peer workers, by lived experience.',
-    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
+    ['/', '/pathway', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
     [
       'Worker records without a live consent grant',
       'Line-manager reporting channels',
@@ -211,7 +211,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'hubCoordinator',
     'Hub Coordinator',
     'Holds the hub: coordination, safety, and the agreements that let the circle hold.',
-    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants'],
+    ['/', '/opportunities', '/governance', '/handoffs', '/audit', '/grants', '/membership'],
     [
       'Individual worker records (no hub view of worker records exists)',
       'Supervision or mentorship content',
@@ -231,7 +231,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'privacyLead',
     'Privacy Lead',
     'Guards the floor: consent, access, complaints, and the minimum protections.',
-    ['/', '/governance', '/audit', '/grants'],
+    ['/', '/governance', '/audit', '/grants', '/membership'],
     [
       'Worker record contents (you review access events and grants, not records)',
       'Supervision or mentorship content',
@@ -252,7 +252,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'steeringCircle',
     'Steering Circle Member',
     'Hub governance: decisions that belong to the hub, made in the open.',
-    ['/', '/governance', '/aggregates', '/audit', '/grants'],
+    ['/', '/governance', '/aggregates', '/audit', '/grants', '/membership'],
     [
       'Individual worker records',
       'Supervision or mentorship content',
@@ -273,7 +273,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'council',
     'National Council Member',
     'National governance: the decisions that belong to the whole Network.',
-    ['/', '/governance', '/aggregates', '/audit', '/grants'],
+    ['/', '/governance', '/aggregates', '/audit', '/grants', '/membership'],
     [
       'Individual worker records',
       'Hub-internal records outside published aggregates and decisions',
@@ -294,7 +294,7 @@ export const ROLE_MANIFESTS: Record<AnyRole, RoleManifest> = {
     'backboneLead',
     'Backbone Lead',
     'Coordinates the Network: materials, systems, workforce intelligence, evaluation.',
-    ['/', '/governance', '/aggregates', '/audit', '/grants'],
+    ['/', '/governance', '/aggregates', '/audit', '/grants', '/membership'],
     [
       'Individual worker records',
       'Raw evaluation submissions',

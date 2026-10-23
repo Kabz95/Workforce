@@ -105,7 +105,7 @@ export default function HubCoordinatorDashboard() {
             {proposedGrants.map((g) => (
               <li key={g.id}>
                 Role-grant request awaiting review: {ROLE_LABELS[g.role]} for {g.granteeId} ·{' '}
-                <Link to="/grants">review →</Link>
+                <Link to="/membership">review →</Link>
               </li>
             ))}
             {openConflicts.map((c) => (
@@ -198,6 +198,7 @@ export default function HubCoordinatorDashboard() {
         <p>
           <Link to="/audit">My audit log →</Link>{' '}
           <Link to="/grants">My roles &amp; grants →</Link>{' '}
+          <Link to="/membership">Membership &amp; grants →</Link>{' '}
           <Link to="/governance">Governance →</Link>
         </p>
         <p className="muted">

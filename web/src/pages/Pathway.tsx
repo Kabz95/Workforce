@@ -4,6 +4,7 @@ import {
   addPathwayStep,
   deletePathwayStep,
   listMyPathwaySteps,
+  listSharedPathwaySteps,
   updatePathwayStep,
 } from '../lib/queries';
 import { formatTimestamp, type PathwayStep, type WithId } from '../lib/types';
@@ -12,8 +13,9 @@ import ErrorNotice from '../components/ErrorNotice';
 const STEP_TYPES = ['entry', 'induction', 'navigation', 'experience', 'mentorship', 'supervision', 'certification', 'other'];
 
 export default function Pathway() {
-  const { user, tenantId } = useAuth();
+  const { user, tenantId, actingRole } = useAuth();
   const [steps, setSteps] = useState<WithId<PathwayStep>[]>([]);
+  const [sharedSteps, setSharedSteps] = useState<WithId<PathwayStep>[]>([]);
   const [error, setError] = useState<unknown>(null);
   const [notice, setNotice] = useState('');
   const [type, setType] = useState('entry');
@@ -32,6 +34,26 @@ export default function Pathway() {
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, tenantId]);
+
+  // Shared-with-me (navigator / supervisor acting capacities): the
+  // SAME query the navigator dashboard uses — steps a worker consented
+  // to share with the caller (sharedWith), nothing else. The worker's
+  // own view of this page is unchanged.
+  const showShared = actingRole === 'navigator' || actingRole === 'supervisor';
+  useEffect(() => {
+    if (!user || !showShared) return;
+    let cancelled = false;
+    void listSharedPathwaySteps(user.uid, tenantId)
+      .then((s) => {
+        if (!cancelled) setSharedSteps(s);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [user, tenantId, showShared]);
 
   const add = async (e: FormEvent) => {
     e.preventDefault();
@@ -133,6 +155,36 @@ export default function Pathway() {
           </table>
         )}
       </section>
+
+      {showShared && (
+        <section className="card" data-testid="shared-with-me">
+          <h2>Shared with me</h2>
+          <p className="muted">
+            Pathway steps workers consented to share with you. Separate from
+            your own steps above — read-only, and nothing unshared is visible.
+          </p>
+          {sharedSteps.length === 0 ? (
+            <p className="muted">No pathway steps shared with you yet.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr><th>Type</th><th>Title</th><th>Status</th><th>Worker</th><th>Created</th></tr>
+              </thead>
+              <tbody>
+                {sharedSteps.map((s) => (
+                  <tr key={s.id}>
+                    <td>{s.type}</td>
+                    <td>{s.title}</td>
+                    <td><span className="pill">{s.status}</span></td>
+                    <td>{s.ownerId}</td>
+                    <td>{formatTimestamp(s.createdAt)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
     </div>
   );
 }

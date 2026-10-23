@@ -14,6 +14,7 @@ import Governance from './pages/Governance';
 import Aggregates from './pages/Aggregates';
 import AuditLog from './pages/AuditLog';
 import MyGrants from './pages/MyGrants';
+import Membership from './pages/Membership';
 import Supervision from './pages/Supervision';
 import Mentorships from './pages/Mentorships';
 import Support from './pages/Support';
@@ -35,7 +36,7 @@ export default function App() {
           <Route
             path="/record"
             element={
-              <ProtectedRoute roles={['worker', 'navigator', 'supervisor']}>
+              <ProtectedRoute roles={['worker', 'navigator', 'supervisor', 'mentor']}>
                 <WorkerRecord />
               </ProtectedRoute>
             }
@@ -43,7 +44,7 @@ export default function App() {
           <Route
             path="/pathway"
             element={
-              <ProtectedRoute roles={['worker', 'navigator']}>
+              <ProtectedRoute roles={['worker', 'navigator', 'supervisor']}>
                 <Pathway />
               </ProtectedRoute>
             }
@@ -92,10 +93,23 @@ export default function App() {
             path="/aggregates"
             element={
               // Route roles mirror the aggregates rules block: analyst /
-              // council / backboneLead read cross-hub; steeringCircle /
-              // hubCoordinator / privacyLead read their own hub.
-              <ProtectedRoute roles={['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead']}>
+              // council / backboneLead / researcher read cross-hub;
+              // steeringCircle / hubCoordinator / privacyLead read their
+              // own hub.
+              <ProtectedRoute roles={['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead', 'researcher']}>
                 <Aggregates />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/membership"
+            element={
+              // Membership & grants view (kernel MEMBERSHIP_VIEW_ROLES):
+              // grant authorities + privacy lead. The data itself comes
+              // from the listScopeGrants callable, which re-verifies
+              // the live grant server-side.
+              <ProtectedRoute roles={['hubCoordinator', 'steeringCircle', 'council', 'backboneLead', 'privacyLead']}>
+                <Membership />
               </ProtectedRoute>
             }
           />

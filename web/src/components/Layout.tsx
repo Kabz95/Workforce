@@ -7,8 +7,8 @@ import ThemeSwitcher from './ThemeSwitcher';
 
 const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/', label: 'Dashboard' },
-  { to: '/record', label: 'My Record', roles: ['worker', 'navigator', 'supervisor'] },
-  { to: '/pathway', label: 'Pathway', roles: ['worker', 'navigator'] },
+  { to: '/record', label: 'My Record', roles: ['worker', 'navigator', 'supervisor', 'mentor'] },
+  { to: '/pathway', label: 'Pathway', roles: ['worker', 'navigator', 'supervisor'] },
   { to: '/consents', label: 'Consents', roles: ['worker'] },
   { to: '/handoffs', label: 'Handoffs', roles: ['worker', 'navigator', 'hubCoordinator', 'supervisor', 'mentor'] },
   { to: '/supervision', label: 'Supervision', roles: ['worker', 'supervisor'] },
@@ -16,7 +16,8 @@ const NAV: { to: string; label: string; roles?: AnyRole[] }[] = [
   { to: '/readiness', label: 'Employer Readiness', roles: ['employer', 'hubCoordinator'] },
   { to: '/opportunities', label: 'Opportunities' },
   { to: '/governance', label: 'Governance' },
-  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead'] },
+  { to: '/aggregates', label: 'Aggregates', roles: ['analyst', 'steeringCircle', 'council', 'backboneLead', 'hubCoordinator', 'privacyLead', 'researcher'] },
+  { to: '/membership', label: 'Membership & Grants', roles: ['hubCoordinator', 'steeringCircle', 'council', 'backboneLead', 'privacyLead'] },
   { to: '/audit', label: 'My Audit Log' },
   { to: '/grants', label: 'My Roles & Grants' },
   { to: '/support', label: 'Support' },

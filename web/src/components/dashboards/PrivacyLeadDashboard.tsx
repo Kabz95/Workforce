@@ -246,6 +246,7 @@ export default function PrivacyLeadDashboard() {
         <p>
           <Link to="/audit">My audit log →</Link>{' '}
           <Link to="/grants">My roles &amp; grants →</Link>{' '}
+          <Link to="/membership">Membership &amp; grants →</Link>{' '}
           <Link to="/governance">Governance →</Link>
         </p>
         <p className="muted">

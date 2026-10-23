@@ -18,6 +18,7 @@ import type {
   AccessEvent,
   AdaptationLog,
   Aggregate,
+  AggregateRelease,
   Assignment,
   CertificationNavigation,
   Complaint,
@@ -259,6 +260,7 @@ const createHandoffFn = httpsCallable(functions, 'createHandoff');
 const respondHandoffFn = httpsCallable(functions, 'respondHandoff');
 const closeHandoffFn = httpsCallable(functions, 'closeHandoff');
 const inviteMemberFn = httpsCallable(functions, 'inviteMember');
+const listScopeGrantsFn = httpsCallable(functions, 'listScopeGrants');
 const createSupervisionSessionFn = httpsCallable(functions, 'createSupervisionSession');
 const createMentorshipFn = httpsCallable(functions, 'createMentorship');
 const askSupportAgentFn = httpsCallable(functions, 'askSupportAgent');
@@ -710,6 +712,34 @@ export async function listMyRoleGrants(uid: string, tenantId: string): Promise<W
   return snap.docs.map((d) => toDoc<RoleGrant>(d));
 }
 
+export interface ScopeGrantsResult {
+  scope: 'hub' | 'network';
+  tenantId: string | null;
+  grants: (RoleGrant & { id: string })[];
+}
+
+/**
+ * Membership & grants view (grant authorities + privacy lead).
+ *
+ * Served by the listScopeGrants CALLABLE, not a client-side rules
+ * read: the rules pin authoriser list reads to the caller's claim
+ * tenant (the cross-tenant-leak invariant) and steeringCircle is
+ * not in the rules' canAuthorise() helper at all — so the promised
+ * view (hub roles: own tenant; council/backboneLead: network-wide;
+ * steeringCircle included) cannot be read lawfully client-side.
+ * The server verifies the caller's LIVE grant document and scopes
+ * the listing from the acting role. Read-only: timestamps come back
+ * as epoch ms (RoleGrant accepts TimestampOrMs).
+ */
+export async function listScopeGrants(acting?: ActingInput): Promise<ScopeGrantsResult> {
+  const result = await listScopeGrantsFn({
+    actingGrantId: acting?.actingGrantId ?? null,
+    actingRole: acting?.actingRole ?? null,
+    purpose: acting?.purpose ?? 'membership oversight',
+  });
+  return result.data as ScopeGrantsResult;
+}
+
 // --- Opportunities (tenant-scoped) ---
 
 export async function listOpportunities(tenantId: string): Promise<WithId<Opportunity>[]> {
@@ -840,6 +870,17 @@ export async function listAggregates(tenantId: string): Promise<WithId<Aggregate
   const q = query(collection(db, 'aggregates'), where('tenantId', '==', tenantId));
   const snap = await getDocs(q);
   return snap.docs.map((d) => toDoc<Aggregate>(d));
+}
+
+/** Aggregate release records for the hub (server-written; read-only).
+ *  The rules give this collection the same shape as aggregates:
+ *  national roles (analyst/council/backboneLead/researcher) may read
+ *  cross-hub, hub roles stay tenant-scoped — this query is tenant-
+ *  filtered, matching the Aggregates page's existing pattern. */
+export async function listAggregateReleases(tenantId: string): Promise<WithId<AggregateRelease>[]> {
+  const q = query(collection(db, 'aggregateReleases'), where('tenantId', '==', tenantId));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => toDoc<AggregateRelease>(d));
 }
 
 // --- Access events (subject sees own entries only) ---
